@@ -474,7 +474,7 @@ class Participant():
         acceptInsecureCerts = config.getBackendSkipVerify(self.nextcloudUrl)
 
         self.seleniumHelper = SeleniumHelper(parentLogger, acceptInsecureCerts)
-
+        self._logger = parentLogger
         if browser == 'chrome':
             self.seleniumHelper.startChrome(width, height, env, driverPath, browserPath)
         elif browser == 'firefox':
@@ -537,3 +537,599 @@ class Participant():
         self.seleniumHelper.execute('''
             OCA.Talk.signalingKill()
         ''')
+
+    def startMonitoringSpeaking(self):
+        """
+        Starts monitoring who is speaking in the call.
+
+        Injects a JavaScript MutationObserver that tracks changes in the
+        participant status CSS classes. Returns functions to manage events.
+
+        :return: a dict with methods to interact with the monitoring
+        """
+
+        # Создаём уникальный идентификатор для хранения событий в окне браузера
+        self.seleniumHelper.execute(f'''
+            if (!window.speakingEvents) {{
+                window.speakingEvents = [];
+            }}
+
+            if (!window.lastProcessedEventIndex) {{
+                window.lastProcessedEventIndex = 0;
+            }}
+
+            // Функция для добавления события в лог
+            window.addSpeakingEvent = (userId, action, duration = null) => {{
+                const timestamp = new Date().toISOString();
+                const event = {{
+                    id: window.speakingEvents.length,
+                    timestamp: timestamp,
+                    userId: userId,
+                    action: action, // 'start' или 'stop'
+                    duration: duration,
+                    createdAt: Date.now()
+                }};
+                window.speakingEvents.push(event);
+                console.log(`[SpeakingMonitor] ${{userId}} ${{action}} speaking at ${{timestamp}}`);
+            }};
+
+            // Функция для получения текущего состояния участников
+            window.getCurrentSpeakingState = () => {{
+                const speakingState = {{}};
+                document.querySelectorAll('.participant').forEach(participant => {{
+                    const userName = participant.querySelector('.participant__user-name')?.innerText;
+                    const statusSpan = participant.querySelector('.participant__status');
+                    const isSpeaking = statusSpan?.classList?.contains('participant__status--highlighted') || false;
+                    if (userName) {{
+                        speakingState[userName] = isSpeaking;
+                    }}
+                }});
+                return speakingState;
+            }};
+
+            // Функция для получения новых событий (с последнего обработанного индекса)
+            window.getNewSpeakingEvents = () => {{
+                const lastIndex = window.lastProcessedEventIndex;
+                const newEvents = window.speakingEvents.slice(lastIndex);
+                return newEvents;
+            }};
+
+            // Функция для очистки переданных событий
+            window.clearSpeakingEvents = (eventIds) => {{
+                if (!eventIds || eventIds.length === 0) {{
+                    return;
+                }}
+
+                // Удаляем события с указанными ID
+                window.speakingEvents = window.speakingEvents.filter(event => !eventIds.includes(event.id));
+
+                // Обновляем lastProcessedEventIndex, так как индексы изменились
+                // Ищем первый элемент, у которого id больше максимального удалённого
+                const maxDeletedId = Math.max(...eventIds);
+                const newFirstIndex = window.speakingEvents.findIndex(event => event.id > maxDeletedId);
+                window.lastProcessedEventIndex = newFirstIndex === -1 ? window.speakingEvents.length : newFirstIndex;
+
+                console.log(`[SpeakingMonitor] Cleared ${{eventIds.length}} events, remaining: ${{window.speakingEvents.length}}`);
+            }};
+
+            // Функция для полной очистки всех событий
+            window.clearAllSpeakingEvents = () => {{
+                window.speakingEvents = [];
+                window.lastProcessedEventIndex = 0;
+                console.log('[SpeakingMonitor] All events cleared');
+            }};
+
+            // Инициализируем состояние
+            if (!window.previousSpeakingState) {{
+                window.previousSpeakingState = window.getCurrentSpeakingState();
+            }}
+
+            // Запускаем периодическую проверку (как fallback, если MutationObserver не срабатывает)
+            if (window.speakingInterval) {{
+                clearInterval(window.speakingInterval);
+            }}
+
+            window.speakingInterval = setInterval(() => {{
+                const currentState = window.getCurrentSpeakingState();
+
+                for (const [userId, isSpeakingNow] of Object.entries(currentState)) {{
+                    const wasSpeaking = window.previousSpeakingState[userId] || false;
+
+                    if (!wasSpeaking && isSpeakingNow) {{
+                        window.addSpeakingEvent(userId, 'start');
+                    }} else if (wasSpeaking && !isSpeakingNow) {{
+                        // Ищем последнее событие start для этого пользователя
+                        let startEvent = null;
+                        for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
+                            if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
+                                startEvent = window.speakingEvents[i];
+                                break;
+                            }}
+                        }}
+                        const duration = startEvent ? (Date.now() - startEvent.createdAt) / 1000 : null;
+                        window.addSpeakingEvent(userId, 'stop', duration);
+                    }}
+                }}
+
+                window.previousSpeakingState = currentState;
+            }}, 500); // Проверяем каждые 500 мс
+
+            // MutationObserver для мгновенного отслеживания изменений
+            if (window.speakingObserver) {{
+                window.speakingObserver.disconnect();
+            }}
+
+            window.speakingObserver = new MutationObserver((mutations) => {{
+                const now = Date.now();
+                mutations.forEach((mutation) => {{
+                    if (mutation.type === 'attributes' && mutation.attributeName === 'class') {{
+                        const statusSpan = mutation.target;
+                        if (statusSpan.classList?.contains('participant__status')) {{
+                            const participantDiv = statusSpan.closest('.participant');
+                            const userId = participantDiv?.querySelector('.participant__user-name')?.innerText;
+                            const isNowSpeaking = statusSpan.classList.contains('participant__status--highlighted');
+
+                            if (userId) {{
+                                const wasSpeaking = mutation.oldValue?.includes('participant__status--highlighted');
+
+                                if (!wasSpeaking && isNowSpeaking) {{
+                                    window.addSpeakingEvent(userId, 'start');
+                                }} else if (wasSpeaking && !isNowSpeaking) {{
+                                    // Ищем последнее событие start для этого пользователя
+                                    let startEvent = null;
+                                    for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
+                                        if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
+                                            startEvent = window.speakingEvents[i];
+                                            break;
+                                        }}
+                                    }}
+                                    const duration = startEvent ? (now - startEvent.createdAt) / 1000 : null;
+                                    window.addSpeakingEvent(userId, 'stop', duration);
+                                }}
+                            }}
+                        }}
+                    }}
+                }});
+            }});
+
+            // Начинаем наблюдение
+            const observeStatusElements = () => {{
+                document.querySelectorAll('.participant__status').forEach(el => {{
+                    window.speakingObserver.observe(el, {{ 
+                        attributes: true, 
+                        attributeOldValue: true, 
+                        attributeFilter: ['class'] 
+                    }});
+                }});
+            }};
+
+            // Наблюдаем за появлением новых участников
+            if (window.participantObserver) {{
+                window.participantObserver.disconnect();
+            }}
+
+            window.participantObserver = new MutationObserver(() => {{
+                observeStatusElements();
+            }});
+
+            window.participantObserver.observe(document.querySelector('#tab-participants ul') || document.body, {{
+                childList: true,
+                subtree: true
+            }});
+
+            observeStatusElements();
+        ''')
+
+        def get_events_since(timestamp=None, clear_after=False):
+            """
+            Returns events that occurred after the given timestamp.
+
+            :param timestamp: ISO format timestamp string (e.g., '2024-01-15T10:30:00.123Z')
+                             or datetime object. If None, returns all new events.
+            :param clear_after: If True, clears all events up to and including the last
+                               returned event from the browser storage.
+            :return: list of events that occurred after the timestamp
+            """
+            if timestamp is None:
+                # Получаем все новые события
+                events_json = self.seleniumHelper.execute('''
+                    const newEvents = window.getNewSpeakingEvents();
+                    return newEvents;
+                ''')
+                events = events_json if events_json else []
+
+                if clear_after and events:
+                    # Очищаем полученные события
+                    event_ids = [e['id'] for e in events]
+                    self.seleniumHelper.execute(f'''
+                        window.clearSpeakingEvents({event_ids});
+                    ''')
+
+                return events
+
+            # Преобразуем timestamp в строку для сравнения в JS
+            if hasattr(timestamp, 'isoformat'):
+                timestamp_str = timestamp.isoformat()
+            else:
+                timestamp_str = str(timestamp)
+
+            # Получаем события после указанного timestamp
+            events_json = self.seleniumHelper.execute(f'''
+                const lastTimestamp = '{timestamp_str}';
+                const allNewEvents = window.getNewSpeakingEvents();
+                const filteredEvents = allNewEvents.filter(event => event.timestamp > lastTimestamp);
+                return filteredEvents;
+            ''')
+            events = events_json if events_json else []
+
+            if clear_after and events:
+                # Очищаем полученные события
+                event_ids = [e['id'] for e in events]
+                self.seleniumHelper.execute(f'''
+                    window.clearSpeakingEvents({event_ids});
+                ''')
+
+            return events
+
+        def get_events_since_last(clear_after=True):
+            """
+            Returns events that occurred since the last call to this function.
+            Automatically clears events after retrieving them.
+
+            :param clear_after: If True, clears events after retrieval.
+            :return: list of new events
+            """
+            events_json = self.seleniumHelper.execute('''
+                const newEvents = window.getNewSpeakingEvents();
+
+                if (newEvents.length > 0) {
+                    // Обновляем индекс последнего обработанного события
+                    const lastEventId = newEvents[newEvents.length - 1].id;
+                    window.lastProcessedEventIndex = lastEventId + 1;
+                }
+
+                return newEvents;
+            ''')
+            events = events_json if events_json else []
+
+            if clear_after and events:
+                event_ids = [e['id'] for e in events]
+                self.seleniumHelper.execute(f'''
+                    window.clearSpeakingEvents({event_ids});
+                ''')
+
+            return events
+
+        def clear_all_events():
+            """
+            Clears all events from the browser storage.
+            """
+            self.seleniumHelper.execute('''
+                window.clearAllSpeakingEvents();
+            ''')
+
+        def get_all_events():
+            """
+            Returns all events without clearing them.
+            """
+            events_json = self.seleniumHelper.execute('''
+                return window.speakingEvents;
+            ''')
+            return events_json if events_json else []
+
+        def stop_monitoring():
+            """
+            Stops the monitoring and returns all remaining events.
+            """
+            self.seleniumHelper.execute('''
+                if (window.speakingInterval) {
+                    clearInterval(window.speakingInterval);
+                }
+                if (window.speakingObserver) {
+                    window.speakingObserver.disconnect();
+                }
+                if (window.participantObserver) {
+                    window.participantObserver.disconnect();
+                }
+                console.log('[SpeakingMonitor] Stopped monitoring');
+            ''')
+            return get_all_events()
+
+        return {
+            'get_events_since': get_events_since,
+            'get_events_since_last': get_events_since_last,
+            'clear_all': clear_all_events,
+            'get_all': get_all_events,
+            'stop': stop_monitoring
+        }
+
+    def save_page_dump(self, filename=None):
+        """
+        Сохраняет HTML дамп текущей страницы в файл.
+        """
+        if filename is None:
+            filename = f"page_dump_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+
+        # Получаем HTML содержимое
+        html_content = self.seleniumHelper.driver.page_source
+
+        # Сохраняем в файл
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+
+        self._logger.info(f"Page dump saved to {filename}")
+        return filename
+
+    def save_page_structure(self, filename=None):
+        """
+        Сохраняет упрощенную структуру страницы (только релевантные элементы).
+        """
+        if filename is None:
+            filename = f"page_structure_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        structure = self.seleniumHelper.execute('''
+            function getDOMStructure(element, depth = 0) {
+                if (depth > 5) return '...';
+                if (!element || !element.tagName) return '';
+
+                let result = '';
+                const indent = '  '.repeat(depth);
+
+                // Получаем информацию об элементе с проверкой типов
+                const tagName = element.tagName.toLowerCase();
+                const id = element.id ? `#${element.id}` : '';
+
+                // Безопасное получение className
+                let classes = '';
+                try {
+                    if (element.className) {
+                        if (typeof element.className === 'string') {
+                            classes = element.className ? `.${element.className.split(' ').join('.')}` : '';
+                        } else if (element.className && typeof element.className.baseVal === 'string') {
+                            // Для SVG элементов
+                            classes = element.className.baseVal ? `.${element.className.baseVal.split(' ').join('.')}` : '';
+                        }
+                    }
+                } catch(e) {
+                    classes = '';
+                }
+
+                // Собираем data-атрибуты
+                const dataAttrs = [];
+                if (element.attributes) {
+                    for (let attr of element.attributes) {
+                        if (attr.name && attr.name.startsWith('data-')) {
+                            dataAttrs.push(`${attr.name}="${attr.value}"`);
+                        }
+                    }
+                }
+
+                const dataStr = dataAttrs.length ? ` [${dataAttrs.join(', ')}]` : '';
+
+                // Получаем текст, если он короткий
+                let text = '';
+                if (element.children && element.children.length === 0 && element.textContent) {
+                    const cleanText = element.textContent.trim();
+                    if (cleanText && cleanText.length < 50) {
+                        text = ` "${cleanText}"`;
+                    }
+                }
+
+                result += `${indent}${tagName}${id}${classes}${dataStr}${text}\\n`;
+
+                // Рекурсивно обрабатываем дочерние элементы
+                if (element.children) {
+                    let childCount = 0;
+                    for (let child of element.children) {
+                        if (childCount++ > 30) {
+                            result += `${indent}  ... (${element.children.length - 30} more children)\\n`;
+                            break;
+                        }
+                        result += getDOMStructure(child, depth + 1);
+                    }
+                }
+
+                return result;
+            }
+
+            return getDOMStructure(document.body);
+        ''')
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(structure)
+
+        self._logger.info(f"Page structure saved to {filename}")
+        return filename
+
+    def analyze_page_elements(self):
+        """
+        Анализирует страницу и возвращает информацию о найденных элементах.
+        """
+        analysis = self.seleniumHelper.execute('''
+            const result = {
+                url: window.location.href,
+                title: document.title,
+                videos: [],
+                participants: [],
+                dataAttributes: [],
+                talkComponents: [],
+                allElements: []
+            };
+
+            // Безопасная функция получения атрибутов
+            function getSafeAttributes(el) {
+                const attrs = [];
+                if (el && el.attributes) {
+                    for (let attr of el.attributes) {
+                        if (attr && attr.name) {
+                            attrs.push({
+                                name: attr.name,
+                                value: attr.value
+                            });
+                        }
+                    }
+                }
+                return attrs;
+            }
+
+            // Находим все video элементы
+            const videos = document.querySelectorAll('video');
+            videos.forEach((video, i) => {
+                result.videos.push({
+                    index: i,
+                    id: video.id || '',
+                    className: typeof video.className === 'string' ? video.className : '',
+                    attributes: getSafeAttributes(video),
+                    parent: video.parentElement?.tagName || '',
+                    parentClasses: video.parentElement?.className || ''
+                });
+            });
+
+            // Находим все элементы с data-* атрибутами
+            const allElements = document.querySelectorAll('[data-*]');
+            const dataElements = [];
+            allElements.forEach(el => {
+                if (el && el.attributes) {
+                    for (let attr of el.attributes) {
+                        if (attr && attr.name && attr.name.startsWith('data-')) {
+                            dataElements.push({
+                                tag: el.tagName,
+                                className: typeof el.className === 'string' ? el.className : '',
+                                attribute: attr.name,
+                                value: attr.value
+                            });
+                        }
+                    }
+                }
+            });
+            result.dataAttributes = dataElements.slice(0, 50); // Ограничиваем количество
+
+            // Ищем Talk компоненты
+            const talkSelectors = [
+                'video',
+                '[data-user]',
+                '[data-user-id]',
+                '.participant',
+                '.participants-list',
+                '.video-container',
+                '.local-video',
+                '.remote-videos',
+                '[class*="talk"]',
+                '[class*="call"]'
+            ];
+
+            talkSelectors.forEach(selector => {
+                try {
+                    const elements = document.querySelectorAll(selector);
+                    if (elements.length) {
+                        result.talkComponents.push({
+                            selector: selector,
+                            count: elements.length
+                        });
+
+                        // Для первых 3 элементов сохраняем образец
+                        if (elements.length > 0) {
+                            const sample = elements[0];
+                            result.talkComponents[result.talkComponents.length - 1].sample = {
+                                tag: sample.tagName,
+                                className: typeof sample.className === 'string' ? sample.className : '',
+                                id: sample.id || '',
+                                attributes: getSafeAttributes(sample).slice(0, 5)
+                            };
+                        }
+                    }
+                } catch(e) {
+                    console.error('Error with selector:', selector, e);
+                }
+            });
+
+            // Ищем элементы с текстом (потенциальные имена участников)
+            const walker = document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_ELEMENT,
+                {
+                    acceptNode: function(node) {
+                        if (node.children && node.children.length === 0 && node.textContent) {
+                            const text = node.textContent.trim();
+                            if (text && text.length > 0 && text.length < 100 && /[a-zA-Zа-яА-Я]/.test(text)) {
+                                return NodeFilter.FILTER_ACCEPT;
+                            }
+                        }
+                        return NodeFilter.FILTER_SKIP;
+                    }
+                }
+            );
+
+            const textElements = [];
+            while(walker.nextNode()) {
+                const node = walker.currentNode;
+                textElements.push({
+                    text: node.textContent.trim(),
+                    tag: node.tagName,
+                    className: typeof node.className === 'string' ? node.className : ''
+                });
+            }
+            result.participants = textElements.slice(0, 30);
+
+            return result;
+        ''')
+
+        # Сохраняем анализ в файл
+        import json
+        analysis_file = f"page_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(analysis_file, 'w', encoding='utf-8') as f:
+            json.dump(analysis, f, indent=2, ensure_ascii=False)
+
+        self._logger.info(f"Page analysis saved to {analysis_file}")
+        self._logger.info(f"Found {len(analysis['videos'])} videos")
+        self._logger.info(f"Found {len(analysis['participants'])} potential text elements")
+
+        return analysis
+
+    def debug_page(self, output_dir='debug_output'):
+        """
+        Полная диагностика страницы.
+        """
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # 1. Сохраняем HTML дамп
+        html_file = os.path.join(output_dir, f'page_dump_{timestamp}.html')
+        with open(html_file, 'w', encoding='utf-8') as f:
+            f.write(self.seleniumHelper.driver.page_source)
+        self._logger.info(f"HTML dump saved to {html_file}")
+
+        # 2. Сохраняем структуру
+        structure_file = os.path.join(output_dir, f'page_structure_{timestamp}.txt')
+        self.save_page_structure(structure_file)
+
+        # 3. Анализируем элементы
+        analysis = self.analyze_page_elements()
+        analysis_file = os.path.join(output_dir, f'page_analysis_{timestamp}.json')
+        with open(analysis_file, 'w', encoding='utf-8') as f:
+            import json
+            json.dump(analysis, f, indent=2, ensure_ascii=False)
+
+        # 4. Делаем скриншот
+        screenshot_file = os.path.join(output_dir, f'screenshot_{timestamp}.png')
+        self.seleniumHelper.driver.save_screenshot(screenshot_file)
+        self._logger.info(f"Screenshot saved to {screenshot_file}")
+
+        # 5. Выводим основные данные в лог
+        self._logger.info(f"=== Debug Summary ===")
+        self._logger.info(f"URL: {analysis['url']}")
+        self._logger.info(f"Title: {analysis['title']}")
+        self._logger.info(f"Videos: {len(analysis['videos'])}")
+        self._logger.info(f"Talk components: {len(analysis['talkComponents'])}")
+        for comp in analysis['talkComponents']:
+            self._logger.info(f"  - {comp['selector']}: {comp['count']} items")
+
+        return {
+            'html_file': html_file,
+            'structure_file': structure_file,
+            'analysis_file': analysis_file,
+            'screenshot_file': screenshot_file,
+            'analysis': analysis
+        }

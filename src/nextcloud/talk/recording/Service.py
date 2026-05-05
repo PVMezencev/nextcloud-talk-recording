@@ -23,6 +23,7 @@ from .Config import config
 from .Participant import Participant
 from .RecorderArgumentsBuilder import RecorderArgumentsBuilder
 
+
 def newAudioSink(baseSinkName):
     """
     Start new audio sink for the audio output of the browser.
@@ -83,7 +84,8 @@ def newAudioSink(baseSinkName):
 
     return moduleIndex, sinkIndex, sourceIndex
 
-def processLog(loggerName, textIoWrapper, level = logging.INFO):
+
+def processLog(loggerName, textIoWrapper, level=logging.INFO):
     """
     Logs the process output.
 
@@ -98,6 +100,49 @@ def processLog(loggerName, textIoWrapper, level = logging.INFO):
             # Lines captured from the recorder have a trailing new line, so it
             # needs to be removed.
             logger.log(level, line.rstrip('\n'))
+
+
+def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
+    # Получаем события
+
+    logger = logging.getLogger(loggerName)
+    logger.log(level, f"Старт мониторинга говорящих: {monitor}")
+    time.sleep(10)
+    counter = 0
+    wr = open(fn, 'w')
+    while True:
+        try:
+            events = monitor['get_events_since_last']()
+        except KeyError:
+            logger.log(level, f"KeyError get_events_since_last: {monitor}")
+            break
+        if events is None or len(events) == 0:
+            logger.log(level, f"events: {events}")
+            if counter > 3:
+                break
+            counter += 1
+            time.sleep(3)
+
+        counter = 0
+
+        # Выводим хронологический лог
+        print("\n=== Хронологический лог говорения ===")
+        for event in events:
+            if event['action'] == 'start':
+                logger.log(level, f"[{event['timestamp']}] 🟢 {event['userId']} начал говорить")
+                wr.write(f"[{event['timestamp']}] 🟢 {event['userId']} начал говорить\n")
+            else:
+                duration_str = f" ({event['duration']:.1f} сек)" if event.get('duration') else ""
+                logger.log(level, f"[{event['timestamp']}] 🔴 {event['userId']} закончил говорить{duration_str}")
+                wr.write(f"[{event['timestamp']}] 🔴 {event['userId']} закончил говорить{duration_str}\n")
+
+    wr.close()
+
+    try:
+        monitor['stop']()
+    except KeyError:
+        logger.log(level, f"KeyError stop: {monitor}")
+        pass
 
 class Service:
     """
@@ -135,6 +180,7 @@ class Service:
         self._participant = None
         self._process = None
         self._fileName = None
+        self._monitor = None
 
         self._recordingTimeStart = 0
         self._recordingTimeStop = 0
@@ -197,10 +243,12 @@ class Service:
             browserPath = config.getBrowserPathForRecording()
 
             self._logger.debug("Starting participant")
-            self._participant = Participant(browser, self.backend, width, height, env, driverPath, browserPath, self._logger)
+            self._participant = Participant(browser, self.backend, width, height, env, driverPath, browserPath,
+                                            self._logger)
 
             self._logger.debug("Joining call")
             self._participant.joinCall(self.token)
+            self._monitor = self._participant.startMonitoringSpeaking()
 
             if self._stopped.is_set():
                 # Not strictly needed, as if the participant is started or the
@@ -215,16 +263,37 @@ class Service:
             extensionlessFileName = f'{fullDirectory}/Recording {datetime.now().strftime("%Y-%m-%d %H-%M-%S")}'
 
             recorderArgumentsBuilder = RecorderArgumentsBuilder()
-            recorderArguments = recorderArgumentsBuilder.getRecorderArguments(self.status, self._display.new_display_var, audioSourceIndex, width, height, extensionlessFileName)
+            recorderArguments = recorderArgumentsBuilder.getRecorderArguments(self.status,
+                                                                              self._display.new_display_var,
+                                                                              audioSourceIndex, width, height,
+                                                                              extensionlessFileName)
 
             self._fileName = recorderArguments[-1]
 
             self._logger.debug("Starting recorder")
             # pylint: disable=consider-using-with
-            self._process = subprocess.Popen(recorderArguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            self._process = subprocess.Popen(recorderArguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                             text=True)
 
             # Log recorder output.
-            Thread(target=processLog, args=[f"{__name__}.recorder-{self.backend}-{self.token}", self._process.stdout], daemon=True).start()
+            Thread(target=processLog, args=[f"{__name__}.recorder-{self.backend}-{self.token}", self._process.stdout],
+                   daemon=True).start()
+
+            processSpeakersLogFileName = f'{fullDirectory}/Recording-log {datetime.now().strftime("%Y-%m-%d %H-%M-%S")}.txt'
+            Thread(target=processSpeakersLog, args=[self._monitor, processSpeakersLogFileName, f"{__name__}.recorder-{self.backend}-{self.token}"],
+                   daemon=True).start()
+
+            # Сохраняем HTML дамп
+            dump_file = self._participant.save_page_dump(
+                f'{fullDirectory}/page_dump_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.html'
+            )
+
+            # Сохраняем структуру
+            structure_file = self._participant.save_page_structure(
+                f'{fullDirectory}/page_structure_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt'
+            )
+
+            self._logger.info(f"Saved page analysis: {dump_file}, {structure_file}")
 
             if self._stopped.is_set():
                 # Not strictly needed, as if the recorder is started after the
