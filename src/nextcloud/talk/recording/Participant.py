@@ -24,8 +24,12 @@ from selenium.webdriver.chrome.webdriver import WebDriver as ChromeDriver
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.firefox.webdriver import WebDriver as FirefoxDriver
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 
 from .Config import config
+
 
 class BiDiLogsHelper:
     """
@@ -441,6 +445,15 @@ class SeleniumHelper:
         self.printLogs()
 
         return result
+
+    def open_participants_section(self):
+        if self.driver is None:
+            return
+
+        wait = WebDriverWait(self.driver, 10)
+        button = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Добавить участников в этот вызов']")))
+        button.click()
 
 
 class Participant():
@@ -1133,3 +1146,6 @@ class Participant():
             'screenshot_file': screenshot_file,
             'analysis': analysis
         }
+
+    def open_participants_section(self):
+        self.seleniumHelper.open_participants_section()

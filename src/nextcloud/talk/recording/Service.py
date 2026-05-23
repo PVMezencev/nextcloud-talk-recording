@@ -144,6 +144,7 @@ def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
         logger.log(level, f"KeyError stop: {monitor}")
         pass
 
+
 class Service:
     """
     Class to set up and tear down the needed elements to record a call.
@@ -180,6 +181,7 @@ class Service:
         self._participant = None
         self._process = None
         self._fileName = None
+        self._logRecordingFileName = None
         self._monitor = None
 
         self._recordingTimeStart = 0
@@ -274,26 +276,16 @@ class Service:
             # pylint: disable=consider-using-with
             self._process = subprocess.Popen(recorderArguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                              text=True)
-
+            # Откроем секцию со списком участников, чтоб получить доступ к событиям - когда кто говорит
+            self._participant.open_participants_section()
             # Log recorder output.
             Thread(target=processLog, args=[f"{__name__}.recorder-{self.backend}-{self.token}", self._process.stdout],
                    daemon=True).start()
 
-            processSpeakersLogFileName = f'{fullDirectory}/Recording-log {datetime.now().strftime("%Y-%m-%d %H-%M-%S")}.txt'
-            Thread(target=processSpeakersLog, args=[self._monitor, processSpeakersLogFileName, f"{__name__}.recorder-{self.backend}-{self.token}"],
+            self._logRecordingFileName = f'{fullDirectory}/Recording-log {datetime.now().strftime("%Y-%m-%d %H-%M-%S")}.txt'
+            Thread(target=processSpeakersLog,
+                   args=[self._monitor, self._logRecordingFileName, f"{__name__}.recorder-{self.backend}-{self.token}"],
                    daemon=True).start()
-
-            # Сохраняем HTML дамп
-            dump_file = self._participant.save_page_dump(
-                f'{fullDirectory}/page_dump_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.html'
-            )
-
-            # Сохраняем структуру
-            structure_file = self._participant.save_page_structure(
-                f'{fullDirectory}/page_structure_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt'
-            )
-
-            self._logger.info(f"Saved page analysis: {dump_file}, {structure_file}")
 
             if self._stopped.is_set():
                 # Not strictly needed, as if the recorder is started after the
@@ -359,6 +351,11 @@ class Service:
             return
 
         BackendNotifier.uploadRecording(self.backend, self.token, self._fileName, self.owner)
+
+        if os.path.exists(self._logRecordingFileName):
+            # Если есть файл логирования записи - отправляем его на сервер.
+            BackendNotifier.uploadRecording(self.backend, self.token, self._logRecordingFileName, self.owner)
+            os.remove(self._logRecordingFileName)
 
         os.remove(self._fileName)
 
