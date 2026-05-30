@@ -37,7 +37,7 @@
             // Проверяем localMediaModel
             if (window.localMediaModel) {
                 console.log('📱 localMediaModel найден');
-                const originalSpeaking = window.localMediaModel.attributes.speaking;
+                let originalSpeaking = window.localMediaModel.attributes.speaking;
                 Object.defineProperty(window.localMediaModel.attributes, 'speaking', {
                     get: () => originalSpeaking,
                     set: (value) => {
@@ -52,7 +52,7 @@
                 console.log('👥 callParticipantCollection найден');
                 const models = window.callParticipantCollection.callParticipantModels;
                 models.forEach((model, index) => {
-                    const originalSpeaking = model.attributes.speaking;
+                    let originalSpeaking = model.attributes.speaking;
                     Object.defineProperty(model.attributes, 'speaking', {
                         get: () => originalSpeaking,
                         set: (value) => {

@@ -276,8 +276,6 @@ class Service:
             # pylint: disable=consider-using-with
             self._process = subprocess.Popen(recorderArguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                              text=True)
-            # Откроем секцию со списком участников, чтоб получить доступ к событиям - когда кто говорит
-            self._participant.open_participants_section()
             # Log recorder output.
             Thread(target=processLog, args=[f"{__name__}.recorder-{self.backend}-{self.token}", self._process.stdout],
                    daemon=True).start()
