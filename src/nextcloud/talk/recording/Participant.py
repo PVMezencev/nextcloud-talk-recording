@@ -622,14 +622,6 @@ class Participant():
                 console.log('[SpeakingMonitor] All events cleared');
             }};
 
-            // Сохраняем оригинальный dispatch если нужно будет остановить
-            if (!window.originalDispatch) {{
-                const store = window.globalThis?.store;
-                if (store && store.dispatch) {{
-                    window.originalDispatch = store.dispatch;
-                }}
-            }}
-
             // Перехватываем store.dispatch для отслеживания speaking событий
             const store = window.globalThis?.store;
             if (store) {{
