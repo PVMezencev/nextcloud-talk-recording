@@ -963,7 +963,7 @@ class Participant():
             // Функция для обновления состояния из store
             const updateSpeakingState = () => {{
                 try {{
-                    const currentSpeaking = store.getState()?.participantsStore?.speaking || {{}};
+                    const currentSpeaking = store.state?.participantsStore?.speaking || {{}};
 
                     // Проверяем изменения для каждого участника
                     for (const [userId, isSpeakingNow] of Object.entries(currentSpeaking)) {{
@@ -1121,7 +1121,7 @@ class Participant():
             console.log('[SpeakingMonitor] Started monitoring via Redux store');
 
             // Выводим текущее состояние для отладки
-            const initialState = store.getState()?.participantsStore?.speaking || {{}};
+            const initialState = store.state?.participantsStore?.speaking || {{}};
             console.log('[SpeakingMonitor] Initial speaking state:', initialState);
         ''')
 
