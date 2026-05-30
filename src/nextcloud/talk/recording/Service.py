@@ -111,6 +111,10 @@ def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
     counter = 0
     wr = open(fn, 'w')
     while True:
+        # Проверка состояния
+        debug_info = monitor['debug']()
+        print("Debug info:", debug_info)
+
         try:
             events = monitor['get_all']()
         except KeyError:
