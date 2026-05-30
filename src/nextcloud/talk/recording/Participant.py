@@ -879,11 +879,18 @@ class Participant():
             ''')
             return get_all_events()
 
+        def printConsoleLog():
+            events_json = self.seleniumHelper.execute('''
+                return window.globalThis?.store?.state?.participantsStore;
+            ''')
+            return events_json if events_json else {}
+
+
         return {
             'get_events_since': get_events_since,
             'get_events_since_last': get_events_since_last,
             'clear_all': clear_all_events,
             'get_all': get_all_events,
             'stop': stop_monitoring,
-            'console': self.seleniumHelper.printConsoleLog
+            'console': printConsoleLog
         }
