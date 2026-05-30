@@ -881,7 +881,26 @@ class Participant():
 
         def printConsoleLog():
             events_json = self.seleniumHelper.execute('''
-                return window.globalThis?.store?.state?.participantsStore;
+                
+                const store = window.globalThis?.store
+                let dispPayload = {}
+                if (store) {
+                    const originalDispatch = store.dispatch;
+                    store.dispatch = function(action, payload) {
+                        if (action === 'setSpeaking' || action === 'participantsStore/setSpeaking') {
+                            dispPayload['action'] = action
+                            dispPayload['payload'] = payload
+                        }
+                        return originalDispatch.call(this, action, payload);
+                    };
+                }
+                return {
+                    'participantsStore': window.globalThis?.store?.state?.participantsStore,
+                    'speaking':  window.globalThis?.store.state.participantsStore.speaking,
+                    'callParticipantModels':  window.callParticipantCollection.callParticipantModels,
+                    'localMediaModel':  window.localMediaModel,
+                    'dispPayload':  dispPayload,
+                }
             ''')
             return events_json if events_json else {}
 
