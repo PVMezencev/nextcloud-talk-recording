@@ -103,49 +103,75 @@ def processLog(loggerName, textIoWrapper, level=logging.INFO):
 
 
 def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
-    # Получаем события
-
     logger = logging.getLogger(loggerName)
-    logger.log(level, f"Старт мониторинга говорящих: {monitor}")
-    time.sleep(10)
-    counter = 0
-    wr = open(fn, 'w')
+    logger.log(level, f"Старт мониторинга говорящих (speaker mode)")
+
+    # Даем время на инициализацию
+    time.sleep(5)
+
+    # Проверяем текущее состояние
+    debug_info = monitor['debug']()
+    logger.log(level, f"Debug info: {debug_info}")
+
+    # Принудительная проверка
+    force = monitor['force_check']()
+    logger.log(level, f"Initial speakers: {force}")
+
+    wr = open(fn, 'w', encoding='utf-8')
+    last_speakers = set()
+    no_events_counter = 0
+
     while True:
-        # Проверка состояния
-        debug_info = monitor['debug']()
-        logger.log(level, f"Debug info: {debug_info}")
+        time.sleep(1)  # Проверяем раз в секунду
 
+
+        debug_speaker = monitor['debug_speaker']()
+        logger.log(level, f"DEBUG {debug_speaker}")
+        # Получаем текущих говорящих
         try:
-            events = monitor['get_all']()
-        except KeyError:
-            logger.log(level, f"KeyError get_events_since_last: {monitor}")
+            current = monitor['force_check']()
+        except Exception as e:
+            logger.log(level, f"Error in force_check: {e}")
             break
-        if events is None or len(events) == 0:
-            logger.log(level, f"events: {events}")
-            if counter > 3:
-                break
-            counter += 1
-            time.sleep(3)
 
-        counter = 0
+        if current and 'speakers' in current:
+            current_speakers = {s['name'] for s in current['speakers']}
 
-        # Выводим хронологический лог
-        print("\n=== Хронологический лог говорения ===")
-        for event in events:
-            if event['action'] == 'start':
-                logger.log(level, f"[{event['timestamp']}] 🟢 {event['userId']} начал говорить")
-                wr.write(f"[{event['timestamp']}] 🟢 {event['userId']} начал говорить\n")
+            # Новые говорящие
+            for speaker in current_speakers - last_speakers:
+                msg = f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 {speaker} начал говорить"
+                logger.log(level, msg)
+                wr.write(msg + '\n')
+                wr.flush()
+
+            # Закончившие говорить
+            for speaker in last_speakers - current_speakers:
+                msg = f"[{datetime.now().strftime('%H:%M:%S')}] 🔴 {speaker} закончил говорить"
+                logger.log(level, msg)
+                wr.write(msg + '\n')
+                wr.flush()
+
+            last_speakers = current_speakers
+
+            if current_speakers:
+                no_events_counter = 0
             else:
-                duration_str = f" ({event['duration']:.1f} сек)" if event.get('duration') else ""
-                logger.log(level, f"[{event['timestamp']}] 🔴 {event['userId']} закончил говорить{duration_str}")
-                wr.write(f"[{event['timestamp']}] 🔴 {event['userId']} закончил говорить{duration_str}\n")
+                no_events_counter += 1
+        else:
+            no_events_counter += 1
+        # Проверяем, что мониторинг еще активен
+        if no_events_counter > 30:  # 30 секунд без активности
+            # Проверяем, не вышел ли участник из звонка
+            debug = monitor['debug']()
+            if debug.get('participantsInCall', 0) == 0:
+                logger.log(level, "No participants in call, stopping monitoring")
+                break
 
     wr.close()
 
     try:
         monitor['stop']()
     except KeyError:
-        logger.log(level, f"KeyError stop: {monitor}")
         pass
 
 

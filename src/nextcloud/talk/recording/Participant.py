@@ -553,6 +553,7 @@ class Participant():
     def startMonitoringSpeaking(self):
         """
         Starts monitoring who is speaking in the call using direct Nextcloud Talk internal handlers.
+        Optimized for speaker mode (no microphone).
         """
 
         js_code = '''
@@ -564,179 +565,10 @@ class Participant():
             window.lastProcessedEventIndex = 0;
 
             // ============================================
-            // СПОСОБ 1: Перехват store.dispatch
+            // ОСНОВНОЙ МЕТОД ДЛЯ SPEAKER РЕЖИМА
             // ============================================
-            function setupStoreInterceptor() {
-                const store = window.globalThis?.store;
-                if (store && !store._dispatchIntercepted) {
-                    store._dispatchIntercepted = true;
-                    window.originalDispatch = store.dispatch;
 
-                    store.dispatch = function(action, payload) {
-                        // Перехватываем только setSpeaking
-                        if (action === 'setSpeaking' || 
-                            action === 'participantsStore/setSpeaking' ||
-                            (typeof action === 'string' && action.includes('setSpeaking'))) {
-
-                            window.speakingEvents.push({
-                                timestamp: Date.now(),
-                                type: 'dispatch',
-                                action: action,
-                                payload: payload,
-                                source: 'store.dispatch'
-                            });
-
-                            // Логируем в консоль для отладки
-                            console.log('[SPEAKING MONITOR] Dispatch:', action, payload);
-                        }
-                        return window.originalDispatch.call(this, action, payload);
-                    };
-                    console.log('[SPEAKING MONITOR] Store interceptor installed');
-                    return true;
-                }
-                return false;
-            }
-
-            // ============================================
-            // СПОСОБ 2: Прямое наблюдение за localMediaModel
-            // ============================================
-            function setupLocalMediaObserver() {
-                if (window.localMediaModel && !window.localMediaModel._observed) {
-                    window.localMediaModel._observed = true;
-
-                    // Сохраняем оригинальное значение
-                    let lastSpeakingState = window.localMediaModel.attributes?.speaking;
-
-                    // Создаем наблюдатель за изменениями
-                    const observer = new MutationObserver(function() {
-                        const currentState = window.localMediaModel.attributes?.speaking;
-                        if (currentState !== lastSpeakingState) {
-                            window.speakingEvents.push({
-                                timestamp: Date.now(),
-                                type: 'local_speaking_change',
-                                speaking: currentState,
-                                previous: lastSpeakingState,
-                                source: 'localMediaModel'
-                            });
-                            console.log('[SPEAKING MONITOR] Local speaking changed:', lastSpeakingState, '->', currentState);
-                            lastSpeakingState = currentState;
-                        }
-                    });
-
-                    // Наблюдаем за изменениями attributes
-                    if (window.localMediaModel.attributes) {
-                        observer.observe(window.localMediaModel.attributes, {
-                            attributes: true,
-                            attributeFilter: ['speaking']
-                        });
-                    }
-
-                    // Фолбэк: интервальная проверка
-                    window.localMediaModelInterval = setInterval(() => {
-                        const currentState = window.localMediaModel.attributes?.speaking;
-                        if (currentState !== lastSpeakingState) {
-                            window.speakingEvents.push({
-                                timestamp: Date.now(),
-                                type: 'local_speaking_interval',
-                                speaking: currentState,
-                                previous: lastSpeakingState,
-                                source: 'localMediaModel'
-                            });
-                            lastSpeakingState = currentState;
-                        }
-                    }, 200);
-
-                    console.log('[SPEAKING MONITOR] LocalMediaModel observer installed');
-                    return true;
-                }
-                return false;
-            }
-
-            // ============================================
-            // СПОСОБ 3: Наблюдение за callParticipantCollection
-            // ============================================
-            function setupCallParticipantObserver() {
-                if (window.callParticipantCollection && !window.callParticipantCollection._observed) {
-                    window.callParticipantCollection._observed = true;
-
-                    // Отслеживаем добавление новых участников
-                    const originalAdd = window.callParticipantCollection.add;
-                    if (originalAdd) {
-                        window.callParticipantCollection.add = function(model) {
-                            observeParticipantModel(model);
-                            return originalAdd.call(this, model);
-                        };
-                    }
-
-                    // Наблюдаем за существующими участниками
-                    if (window.callParticipantCollection.callParticipantModels) {
-                        window.callParticipantCollection.callParticipantModels.forEach(model => {
-                            observeParticipantModel(model);
-                        });
-                    }
-
-                    // Функция для наблюдения за моделью участника
-                    function observeParticipantModel(model) {
-                        if (model._speakingObserved) return;
-                        model._speakingObserved = true;
-
-                        let lastSpeakingState = model.attributes?.speaking;
-
-                        // Наблюдаем за изменениями атрибутов
-                        if (model.attributes) {
-                            const observer = new MutationObserver(function() {
-                                const currentState = model.attributes?.speaking;
-                                if (currentState !== lastSpeakingState) {
-                                    window.speakingEvents.push({
-                                        timestamp: Date.now(),
-                                        type: 'participant_speaking_change',
-                                        participantId: model.attributes?.peerId,
-                                        participantName: model.attributes?.name,
-                                        speaking: currentState,
-                                        previous: lastSpeakingState,
-                                        source: 'callParticipantModel'
-                                    });
-                                    lastSpeakingState = currentState;
-                                }
-                            });
-
-                            observer.observe(model.attributes, {
-                                attributes: true,
-                                attributeFilter: ['speaking']
-                            });
-                        }
-                    }
-
-                    // Интервальная проверка всех участников
-                    window.callParticipantCollectionInterval = setInterval(() => {
-                        if (window.callParticipantCollection.callParticipantModels) {
-                            window.callParticipantCollection.callParticipantModels.forEach(model => {
-                                const currentState = model.attributes?.speaking;
-                                if (currentState !== model._lastObservedSpeaking) {
-                                    window.speakingEvents.push({
-                                        timestamp: Date.now(),
-                                        type: 'participant_speaking_interval',
-                                        participantId: model.attributes?.peerId,
-                                        participantName: model.attributes?.name,
-                                        speaking: currentState,
-                                        previous: model._lastObservedSpeaking,
-                                        source: 'callParticipantModel'
-                                    });
-                                    model._lastObservedSpeaking = currentState;
-                                }
-                            });
-                        }
-                    }, 200);
-
-                    console.log('[SPEAKING MONITOR] CallParticipant observer installed');
-                    return true;
-                }
-                return false;
-            }
-
-            // ============================================
-            // СПОСОБ 4: Перехват WebSocket сообщений
-            // ============================================
+            // 1. Мониторинг через WebSocket (основной источник в speaker режиме)
             function setupWebSocketInterceptor() {
                 if (window.WebSocket && !window._websocketIntercepted) {
                     window._websocketIntercepted = true;
@@ -744,20 +576,42 @@ class Participant():
 
                     window.WebSocket = function(...args) {
                         const ws = new OriginalWebSocket(...args);
+                        const url = args[0];
 
                         ws.addEventListener('message', function(event) {
                             try {
                                 const data = JSON.parse(event.data);
+
+                                // Логируем все сообщения для отладки
+                                if (data.type === 'message' || data.type === 'event') {
+                                    console.log('[WS]', data.type, data);
+                                }
+
                                 // Проверяем наличие speaking данных
-                                if (data.type === 'speaking' || 
-                                    data.data?.speaking !== undefined ||
-                                    data.speaking !== undefined) {
+                                if (data.type === 'speaking') {
                                     window.speakingEvents.push({
                                         timestamp: Date.now(),
-                                        type: 'websocket_message',
+                                        type: 'websocket_speaking',
                                         data: data,
                                         source: 'websocket'
                                     });
+                                    console.log('[SPEAKING] WebSocket speaking event:', data);
+                                }
+
+                                // Проверяем users-changed события (содержат speaking статус)
+                                if (data.type === 'users-changed' || (data.data && data.data.users)) {
+                                    const users = data.data?.users || data.users || [];
+                                    const speakingUsers = users.filter(u => u.speaking === true);
+                                    if (speakingUsers.length > 0) {
+                                        window.speakingEvents.push({
+                                            timestamp: Date.now(),
+                                            type: 'websocket_users_changed',
+                                            speakingUsers: speakingUsers,
+                                            allUsers: users,
+                                            source: 'websocket'
+                                        });
+                                        console.log('[SPEAKING] Users changed with speakers:', speakingUsers);
+                                    }
                                 }
                             } catch(e) {}
                         });
@@ -766,74 +620,44 @@ class Participant():
                     };
 
                     window.WebSocket.prototype = OriginalWebSocket.prototype;
-                    console.log('[SPEAKING MONITOR] WebSocket interceptor installed');
+                    console.log('[SPEAKING MONITOR] WebSocket interceptor installed for speaker mode');
                     return true;
                 }
                 return false;
             }
 
-            // ============================================
-            // СПОСОБ 5: Мониторинг через DOM (fallback)
-            // ============================================
-            function setupDOMObserver() {
-                if (!window._domObserverInstalled) {
-                    window._domObserverInstalled = true;
-
-                    let lastSpeakingElements = [];
-
-                    setInterval(() => {
-                        // Ищем элементы с классом speaking
-                        const speakingElements = document.querySelectorAll('.speaking, [class*="speaking"]');
-                        const currentSpeakers = [];
-
-                        speakingElements.forEach(el => {
-                            const nameEl = el.querySelector('.video-name, .participant-name, [class*="name"]');
-                            if (nameEl) {
-                                currentSpeakers.push(nameEl.textContent.trim());
-                            }
-                        });
-
-                        if (JSON.stringify(currentSpeakers) !== JSON.stringify(lastSpeakingElements)) {
-                            window.speakingEvents.push({
-                                timestamp: Date.now(),
-                                type: 'dom_speaking_change',
-                                speakers: currentSpeakers,
-                                previous: lastSpeakingElements,
-                                source: 'dom'
-                            });
-                            lastSpeakingElements = currentSpeakers;
-                        }
-                    }, 500);
-
-                    console.log('[SPEAKING MONITOR] DOM observer installed');
-                    return true;
-                }
-                return false;
-            }
-
-            // ============================================
-            // СПОСОБ 6: Периодическая проверка store (fallback)
-            // ============================================
+            // 2. Мониторинг через store polling (fallback)
             function setupStorePolling() {
                 if (!window._storePollingInstalled) {
                     window._storePollingInstalled = true;
 
                     let lastSpeakingState = {};
 
-                    setInterval(() => {
+                    window.storePollingInterval = setInterval(() => {
                         const store = window.globalThis?.store;
-                        if (store && store.state?.participantsStore?.speaking) {
+                        if (store && store.state?.participantsStore) {
+                            const speaking = store.state.participantsStore.speaking || {};
+                            const attendees = store.state.participantsStore.attendees || {};
+                            const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
+
                             const currentSpeaking = {};
-                            for (const [id, info] of Object.entries(store.state.participantsStore.speaking)) {
-                                if (info.speaking) {
-                                    currentSpeaking[id] = info;
+                            for (const [id, info] of Object.entries(speaking)) {
+                                if (info.speaking === true) {
+                                    const attendee = attendees[token]?.[id] || {};
+                                    currentSpeaking[id] = {
+                                        id: id,
+                                        name: attendee.displayName || attendee.actorId || 'Unknown',
+                                        speaking: info.speaking,
+                                        totalTimeMs: info.totalCountedTime || 0,
+                                        timestamp: info.lastTimestamp
+                                    };
                                 }
                             }
 
                             const currentJson = JSON.stringify(currentSpeaking);
                             const lastJson = JSON.stringify(lastSpeakingState);
 
-                            if (currentJson !== lastJson) {
+                            if (currentJson !== lastJson && Object.keys(currentSpeaking).length > 0) {
                                 window.speakingEvents.push({
                                     timestamp: Date.now(),
                                     type: 'store_polling',
@@ -841,10 +665,21 @@ class Participant():
                                     previousState: lastSpeakingState,
                                     source: 'store'
                                 });
+                                console.log('[SPEAKING] Store polling detected speakers:', Object.keys(currentSpeaking));
                                 lastSpeakingState = currentSpeaking;
+                            } else if (Object.keys(currentSpeaking).length === 0 && Object.keys(lastSpeakingState).length > 0) {
+                                // Все замолчали
+                                window.speakingEvents.push({
+                                    timestamp: Date.now(),
+                                    type: 'store_polling',
+                                    speakingState: {},
+                                    previousState: lastSpeakingState,
+                                    source: 'store'
+                                });
+                                lastSpeakingState = {};
                             }
                         }
-                    }, 300);
+                    }, 500);
 
                     console.log('[SPEAKING MONITOR] Store polling installed');
                     return true;
@@ -852,31 +687,142 @@ class Participant():
                 return false;
             }
 
-            // ============================================
-            // ЗАПУСК ВСЕХ ПЕРЕХВАТЧИКОВ
-            // ============================================
+            // 3. Мониторинг через DOM (визуальные индикаторы)
+            function setupDOMObserver() {
+                if (!window._domObserverInstalled) {
+                    window._domObserverInstalled = true;
 
-            // Ждем загрузки страницы
-            function installAll() {
-                setupStoreInterceptor();
-                setupLocalMediaObserver();
-                setupCallParticipantObserver();
-                setupWebSocketInterceptor();
-                setupDOMObserver();
-                setupStorePolling();
+                    let lastSpeakers = [];
 
-                // Сохраняем состояние store для отладки
-                window.speakingMonitorReady = true;
-                console.log('[SPEAKING MONITOR] All interceptors installed');
-                console.log('[SPEAKING MONITOR] Store available:', !!window.globalThis?.store);
-                console.log('[SPEAKING MONITOR] localMediaModel available:', !!window.localMediaModel);
-                console.log('[SPEAKING MONITOR] callParticipantCollection available:', !!window.callParticipantCollection);
+                    window.domPollingInterval = setInterval(() => {
+                        // Ищем говорящих через CSS классы
+                        const currentSpeakers = [];
+
+                        // Метод 1: через класс 'speaking'
+                        document.querySelectorAll('.speaking, [class*="speaking-true"], [data-speaking="true"]').forEach(el => {
+                            const nameEl = el.querySelector('.video-name, .participant-name, [class*="name"]');
+                            if (nameEl) {
+                                currentSpeakers.push(nameEl.textContent.trim());
+                            }
+                        });
+
+                        // Метод 2: через границы видео (стиль)
+                        document.querySelectorAll('.video, .video-container').forEach(video => {
+                            const borderColor = window.getComputedStyle(video).borderColor;
+                            if (borderColor === 'rgb(0, 160, 210)' || borderColor === '#00a0d2') {
+                                const nameEl = video.querySelector('.video-name, .participant-name');
+                                if (nameEl) {
+                                    const name = nameEl.textContent.trim();
+                                    if (!currentSpeakers.includes(name)) {
+                                        currentSpeakers.push(name);
+                                    }
+                                }
+                            }
+                        });
+
+                        if (JSON.stringify(currentSpeakers) !== JSON.stringify(lastSpeakers) && currentSpeakers.length > 0) {
+                            window.speakingEvents.push({
+                                timestamp: Date.now(),
+                                type: 'dom_speaking',
+                                speakers: currentSpeakers,
+                                previous: lastSpeakers,
+                                source: 'dom'
+                            });
+                            console.log('[SPEAKING] DOM detected speakers:', currentSpeakers);
+                            lastSpeakers = currentSpeakers;
+                        }
+                    }, 300);
+
+                    console.log('[SPEAKING MONITOR] DOM observer installed');
+                    return true;
+                }
+                return false;
             }
 
-            // Запускаем немедленно и повторяем через 1 секунду (на случай если объекты еще не загрузились)
+            // 4. Прямой доступ к signaling (если доступен)
+            function setupSignalingAccess() {
+                if (window.OCA?.Talk?.signaling) {
+                    console.log('[SPEAKING] OCA.Talk.signaling available');
+
+                    // Сохраняем оригинальный обработчик
+                    const signaling = window.OCA.Talk.signaling;
+
+                    if (signaling._speakingMonitored) return;
+                    signaling._speakingMonitored = true;
+
+                    // Перехватываем метод обработки сообщений
+                    const originalOnMessage = signaling._onMessage;
+                    if (originalOnMessage) {
+                        signaling._onMessage = function(message) {
+                            if (message.type === 'speaking' || (message.data && message.data.speaking)) {
+                                window.speakingEvents.push({
+                                    timestamp: Date.now(),
+                                    type: 'signaling_direct',
+                                    message: message,
+                                    source: 'signaling'
+                                });
+                            }
+                            return originalOnMessage.call(this, message);
+                        };
+                    }
+                }
+            }
+
+            // 5. Периодическая проверка активных участников
+            function setupParticipantsPolling() {
+                if (!window._participantsPollingInstalled) {
+                    window._participantsPollingInstalled = true;
+
+                    window.participantsPollingInterval = setInterval(() => {
+                        const store = window.globalThis?.store;
+                        if (store && store.state?.participantsStore) {
+                            const inCall = store.state.participantsStore.inCall || {};
+                            const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
+                            const roomInCall = inCall[token] || {};
+
+                            // Проверяем, есть ли кто-то в звонке
+                            const participantsInCall = Object.keys(roomInCall).filter(sid => roomInCall[sid] !== 0);
+
+                            if (participantsInCall.length > 0 && !window._hasLoggedParticipants) {
+                                window._hasLoggedParticipants = true;
+                                window.speakingEvents.push({
+                                    timestamp: Date.now(),
+                                    type: 'participants_in_call',
+                                    count: participantsInCall.length,
+                                    sessions: participantsInCall,
+                                    source: 'store'
+                                });
+                                console.log('[SPEAKING] Participants in call:', participantsInCall.length);
+                            }
+                        }
+                    }, 2000);
+                }
+            }
+
+            // ============================================
+            // ЗАПУСК
+            // ============================================
+
+            function installAll() {
+                console.log('[SPEAKING MONITOR] Installing interceptors for speaker mode...');
+
+                setupWebSocketInterceptor();
+                setupStorePolling();
+                setupDOMObserver();
+                setupSignalingAccess();
+                setupParticipantsPolling();
+
+                window.speakingMonitorReady = true;
+
+                // Выводим отладочную информацию
+                console.log('[SPEAKING MONITOR] Store available:', !!window.globalThis?.store);
+                console.log('[SPEAKING MONITOR] WebSocket available:', !!window.WebSocket);
+                console.log('[SPEAKING MONITOR] OCA.Talk available:', !!window.OCA?.Talk);
+            }
+
             installAll();
-            setTimeout(installAll, 1000);
-            setTimeout(installAll, 3000);
+            setTimeout(installAll, 2000);
+            setTimeout(installAll, 5000);
 
             return true;
         })();
@@ -892,7 +838,7 @@ class Participant():
             return events_json if events_json else []
 
         def get_new_events():
-            """Returns only new events since last call and clears them."""
+            """Returns only new events since last call."""
             events_json = self.seleniumHelper.execute('''
                 const events = window.speakingEvents || [];
                 const lastIndex = window.lastProcessedEventIndex || 0;
@@ -903,72 +849,98 @@ class Participant():
             return events_json if events_json else []
 
         def stop_monitoring():
-            """Stops the monitoring and returns all remaining events."""
+            """Stops the monitoring."""
             self.seleniumHelper.execute('''
-                // Очищаем интервалы
-                if (window.localMediaModelInterval) {
-                    clearInterval(window.localMediaModelInterval);
-                }
-                if (window.callParticipantCollectionInterval) {
-                    clearInterval(window.callParticipantCollectionInterval);
-                }
-
-                // Восстанавливаем store.dispatch
-                if (window.originalDispatch) {
-                    const store = window.globalThis?.store;
-                    if (store && store._dispatchIntercepted) {
-                        store.dispatch = window.originalDispatch;
-                        delete store._dispatchIntercepted;
-                    }
-                }
-
-                console.log('[SPEAKING MONITOR] Monitoring stopped');
+                if (window.storePollingInterval) clearInterval(window.storePollingInterval);
+                if (window.domPollingInterval) clearInterval(window.domPollingInterval);
+                if (window.participantsPollingInterval) clearInterval(window.participantsPollingInterval);
+                console.log('[SPEAKING MONITOR] Stopped');
             ''')
             return get_all_events()
 
         def get_debug_info():
-            """Returns debug information about available objects."""
+            """Returns debug information."""
             debug_info = self.seleniumHelper.execute('''
                 return {
                     storeAvailable: !!window.globalThis?.store,
-                    localMediaModelAvailable: !!window.localMediaModel,
-                    callParticipantCollectionAvailable: !!window.callParticipantCollection,
+                    webSocketIntercepted: !!window._websocketIntercepted,
                     speakingEventsCount: window.speakingEvents?.length || 0,
                     storeSpeakingState: window.globalThis?.store?.state?.participantsStore?.speaking || {},
-                    localMediaModelSpeaking: window.localMediaModel?.attributes?.speaking || false,
-                    callParticipantModelsCount: window.callParticipantCollection?.callParticipantModels?.length || 0
+                    inCallState: window.globalThis?.store?.state?.participantsStore?.inCall || {},
+                    ocaTalkAvailable: !!window.OCA?.Talk,
+                    url: window.location.href
                 };
             ''')
             return debug_info
 
         def force_check():
-            """Force check current speaking status."""
+            """Force check current speaking status from store."""
             status = self.seleniumHelper.execute('''
                 const store = window.globalThis?.store;
-                const speaking = store?.state?.participantsStore?.speaking || {};
-                const attendees = store?.state?.participantsStore?.attendees || {};
+                if (!store) return [];
+
+                const speaking = store.state?.participantsStore?.speaking || {};
+                const attendees = store.state?.participantsStore?.attendees || {};
+                const inCall = store.state?.participantsStore?.inCall || {};
                 const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
 
                 const result = [];
+
+                // Проверяем всех участников в звонке
+                const roomInCall = inCall[token] || {};
+                const participantsInCall = Object.keys(roomInCall);
+
                 for (const [id, info] of Object.entries(speaking)) {
-                    if (info.speaking) {
+                    if (info.speaking === true) {
                         const attendee = attendees[token]?.[id] || {};
                         result.push({
                             attendeeId: id,
                             name: attendee.displayName || attendee.actorId || 'Unknown',
                             speaking: info.speaking,
-                            totalTimeMs: info.totalCountedTime
+                            totalTimeMs: info.totalCountedTime || 0,
+                            totalTimeSec: ((info.totalCountedTime || 0) / 1000).toFixed(1)
                         });
                     }
                 }
-                return result;
+
+                return {
+                    speakers: result,
+                    participantsInCall: participantsInCall.length,
+                    speakingCount: Object.keys(speaking).length
+                };
             ''')
             return status
+
+        def debug_speaker_mode(self):
+            """Отладка speaker режима"""
+
+            result = self.seleniumHelper.execute('''
+                const store = window.globalThis?.store;
+                const participantsStore = store?.state?.participantsStore;
+
+                const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
+
+                return {
+                    url: window.location.href,
+                    token: token,
+                    storeAvailable: !!store,
+                    participantsStoreAvailable: !!participantsStore,
+                    inCall: participantsStore?.inCall?.[token] || {},
+                    speaking: participantsStore?.speaking || {},
+                    attendees: Object.keys(participantsStore?.attendees?.[token] || {}).length,
+                    webSocketIntercepted: !!window._websocketIntercepted,
+                    speakingEventsCount: window.speakingEvents?.length || 0
+                };
+            ''')
+
+            self._logger.info(f"Speaker mode debug: {result}")
+            return result
 
         return {
             'get_all': get_all_events,
             'get_new': get_new_events,
             'stop': stop_monitoring,
             'debug': get_debug_info,
+            'debug_speaker': debug_speaker_mode,
             'force_check': force_check
         }
