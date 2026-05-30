@@ -894,10 +894,12 @@ class Participant():
                         return originalDispatch.call(this, action, payload);
                     };
                 }
+                let callParticipantModels = {}
+                if (window.callParticipantCollection) callParticipantModels = window.callParticipantCollection.callParticipantModels
                 return {
                     'participantsStore': window.globalThis?.store?.state?.participantsStore,
-                    'speaking':  window.globalThis?.store.state.participantsStore.speaking,
-                    'callParticipantModels':  window.callParticipantCollection.callParticipantModels,
+                    'speaking':  window.globalThis?.store?.state?.participantsStore?.speaking,
+                    'callParticipantModels':  callParticipantModels,
                     'localMediaModel':  window.localMediaModel,
                     'dispPayload':  dispPayload,
                 }
