@@ -911,7 +911,7 @@ class Participant():
             ''')
             return status
 
-        def debug_speaker_mode(self):
+        def debug_speaker_mode():
             """Отладка speaker режима"""
 
             result = self.seleniumHelper.execute('''
