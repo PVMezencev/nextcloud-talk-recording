@@ -551,7 +551,7 @@ class Participant():
             OCA.Talk.signalingKill()
         ''')
 
-    def startMonitoringSpeaking_2(self):
+    def startMonitoringSpeaking(self):
         """
         Starts monitoring who is speaking in the call using direct Nextcloud Talk internal handlers.
 
@@ -632,7 +632,7 @@ class Participant():
 
             // Перехватываем store.dispatch для отслеживания speaking событий
             const store = window.globalThis?.store;
-            if (store && !window.speakingDispatchHooked) {{
+            if (store) {{
                 const originalDispatch = store.dispatch;
                 store.dispatch = function(action, payload) {{
                     if (action === 'setSpeaking' || action === 'participantsStore/setSpeaking') {{
@@ -658,8 +658,6 @@ class Participant():
                     }}
                     return originalDispatch.call(this, action, payload);
                 }};
-                window.speakingDispatchHooked = true;
-                console.log('[SpeakingMonitor] Hooked into store.dispatch');
             }}
 
             // Также отслеживаем localMediaModel для локального пользователя
@@ -857,7 +855,7 @@ class Participant():
             """Stops the monitoring and returns all remaining events."""
             self.seleniumHelper.execute('''
                 // Восстанавливаем оригинальный dispatch
-                if (window.originalDispatch && window.speakingDispatchHooked) {
+                if (window.originalDispatch) {
                     const store = window.globalThis?.store;
                     if (store) {
                         store.dispatch = window.originalDispatch;
@@ -899,315 +897,4 @@ class Participant():
             'get_all': get_all_events,
             'stop': stop_monitoring,
             'console': printConsoleLog
-        }
-
-    def startMonitoringSpeaking(self):
-        """
-        Starts monitoring who is speaking in the call using Nextcloud Talk's Redux store.
-        """
-
-        self.seleniumHelper.execute(f'''
-            if (!window.speakingEvents) {{
-                window.speakingEvents = [];
-            }}
-
-            if (!window.lastProcessedEventIndex) {{
-                window.lastProcessedEventIndex = 0;
-            }}
-
-            window.addSpeakingEvent = (userId, action, duration = null) => {{
-                const timestamp = new Date().toISOString();
-                const event = {{
-                    id: window.speakingEvents.length,
-                    timestamp: timestamp,
-                    userId: userId,
-                    action: action,
-                    duration: duration,
-                    createdAt: Date.now()
-                }};
-                window.speakingEvents.push(event);
-                console.log(`[SpeakingMonitor] ${{userId}} ${{action}} speaking at ${{timestamp}}`);
-            }};
-
-            window.getNewSpeakingEvents = () => {{
-                const lastIndex = window.lastProcessedEventIndex;
-                const newEvents = window.speakingEvents.slice(lastIndex);
-                return newEvents;
-            }};
-
-            window.clearSpeakingEvents = (eventIds) => {{
-                if (!eventIds || eventIds.length === 0) return;
-                window.speakingEvents = window.speakingEvents.filter(event => !eventIds.includes(event.id));
-                const maxDeletedId = Math.max(...eventIds);
-                const newFirstIndex = window.speakingEvents.findIndex(event => event.id > maxDeletedId);
-                window.lastProcessedEventIndex = newFirstIndex === -1 ? window.speakingEvents.length : newFirstIndex;
-            }};
-
-            window.clearAllSpeakingEvents = () => {{
-                window.speakingEvents = [];
-                window.lastProcessedEventIndex = 0;
-            }};
-
-            // Получаем доступ к store
-            const store = globalThis.store;
-            if (!store) {{
-                console.error('[SpeakingMonitor] Store not found!');
-                return;
-            }}
-
-            console.log('[SpeakingMonitor] Store found, starting monitoring...');
-
-            // Сохраняем предыдущее состояние speaking
-            let previousSpeakingState = {{}};
-
-            // Функция для обновления состояния из store
-            const updateSpeakingState = () => {{
-                try {{
-                    const currentSpeaking = store.state?.participantsStore?.speaking || {{}};
-
-                    // Проверяем изменения для каждого участника
-                    for (const [userId, isSpeakingNow] of Object.entries(currentSpeaking)) {{
-                        const wasSpeaking = previousSpeakingState[userId] || false;
-
-                        if (isSpeakingNow && !wasSpeaking) {{
-                            window.addSpeakingEvent(userId, 'start');
-                        }} else if (!isSpeakingNow && wasSpeaking) {{
-                            // Находим время начала говорения
-                            let startTime = null;
-                            for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                                if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                    startTime = window.speakingEvents[i].createdAt;
-                                    break;
-                                }}
-                            }}
-                            const duration = startTime ? (Date.now() - startTime) / 1000 : null;
-                            window.addSpeakingEvent(userId, 'stop', duration);
-                        }}
-                    }}
-
-                    // Проверяем удаленных участников
-                    for (const userId of Object.keys(previousSpeakingState)) {{
-                        if (!currentSpeaking[userId] && previousSpeakingState[userId]) {{
-                            let startTime = null;
-                            for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                                if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                    startTime = window.speakingEvents[i].createdAt;
-                                    break;
-                                }}
-                            }}
-                            const duration = startTime ? (Date.now() - startTime) / 1000 : null;
-                            window.addSpeakingEvent(userId, 'stop', duration);
-                        }}
-                    }}
-
-                    previousSpeakingState = {{...currentSpeaking}};
-                }} catch(e) {{
-                    console.warn('[SpeakingMonitor] Error updating state:', e);
-                }}
-            }};
-
-            // Подписываемся на изменения store
-            if (!window.storeUnsubscribe) {{
-                window.storeUnsubscribe = store.subscribe(() => {{
-                    updateSpeakingState();
-                }});
-                console.log('[SpeakingMonitor] Subscribed to store changes');
-            }}
-
-            // Инициализируем начальное состояние
-            updateSpeakingState();
-
-            // Дополнительно отслеживаем DOM изменения как fallback
-            if (window.speakingObserver) {{
-                window.speakingObserver.disconnect();
-            }}
-
-            window.speakingObserver = new MutationObserver((mutations) => {{
-                mutations.forEach((mutation) => {{
-                    if (mutation.type === 'attributes' && 
-                        (mutation.attributeName === 'class' || mutation.attributeName === 'data-speaking')) {{
-
-                        const target = mutation.target;
-                        let userId = null;
-                        let isSpeakingNow = false;
-
-                        // Пытаемся извлечь userId из разных атрибутов
-                        userId = target.closest('[data-user-id]')?.getAttribute('data-user-id') ||
-                                target.closest('[data-attendee-id]')?.getAttribute('data-attendee-id') ||
-                                target.closest('.participant')?.querySelector('.participant__user-name')?.innerText ||
-                                target.closest('.participant')?.querySelector('.display-name')?.innerText;
-
-                        // Проверяем статус говорения
-                        if (target.classList) {{
-                            isSpeakingNow = target.classList.contains('participant__status--highlighted') ||
-                                          target.classList.contains('speaking') ||
-                                          target.classList.contains('voice-active');
-                        }}
-                        if (target.getAttribute && target.getAttribute('data-speaking') === 'true') {{
-                            isSpeakingNow = true;
-                        }}
-
-                        if (userId && isSpeakingNow !== (mutation.oldValue?.includes('speaking') || false)) {{
-                            const wasSpeaking = previousSpeakingState[userId] || false;
-                            if (isSpeakingNow && !wasSpeaking) {{
-                                window.addSpeakingEvent(userId, 'start');
-                            }} else if (!isSpeakingNow && wasSpeaking) {{
-                                let startTime = null;
-                                for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                                    if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                        startTime = window.speakingEvents[i].createdAt;
-                                        break;
-                                    }}
-                                }}
-                                const duration = startTime ? (Date.now() - startTime) / 1000 : null;
-                                window.addSpeakingEvent(userId, 'stop', duration);
-                            }}
-                        }}
-                    }}
-                }});
-            }});
-
-            // Настраиваем наблюдение за DOM элементами
-            const observeSpeakingElements = () => {{
-                const selectors = [
-                    '.participant__status',
-                    '.speaking-indicator',
-                    '[data-speaking]',
-                    '.participant'
-                ];
-                selectors.forEach(selector => {{
-                    document.querySelectorAll(selector).forEach(el => {{
-                        try {{
-                            window.speakingObserver.observe(el, {{ 
-                                attributes: true, 
-                                attributeOldValue: true,
-                                attributeFilter: ['class', 'data-speaking']
-                            }});
-                        }} catch(e) {{
-                            // Игнорируем ошибки
-                        }}
-                    }});
-                }});
-            }};
-
-            // Наблюдаем за появлением новых элементов
-            if (window.domObserver) {{
-                window.domObserver.disconnect();
-            }}
-
-            window.domObserver = new MutationObserver(() => {{
-                observeSpeakingElements();
-            }});
-
-            const targetNode = document.querySelector('.participants-list, #participants, .call-container, body');
-            if (targetNode) {{
-                window.domObserver.observe(targetNode, {{
-                    childList: true,
-                    subtree: true
-                }});
-            }}
-
-            observeSpeakingElements();
-
-            // Fallback периодическая проверка (на случай, если store.subscribe не сработает)
-            if (window.fallbackInterval) {{
-                clearInterval(window.fallbackInterval);
-            }}
-
-            window.fallbackInterval = setInterval(() => {{
-                updateSpeakingState();
-            }}, 500);
-
-            console.log('[SpeakingMonitor] Started monitoring via Redux store');
-
-            // Выводим текущее состояние для отладки
-            const initialState = store.state?.participantsStore?.speaking || {{}};
-            console.log('[SpeakingMonitor] Initial speaking state:', initialState);
-        ''')
-
-        def get_events_since(timestamp=None, clear_after=False):
-            if timestamp is None:
-                events_json = self.seleniumHelper.execute('''
-                    const newEvents = window.getNewSpeakingEvents();
-                    return newEvents;
-                ''')
-                events = events_json if events_json else []
-                if clear_after and events:
-                    event_ids = [e['id'] for e in events]
-                    self.seleniumHelper.execute(f'''
-                        window.clearSpeakingEvents({event_ids});
-                    ''')
-                return events
-
-            if hasattr(timestamp, 'isoformat'):
-                timestamp_str = timestamp.isoformat()
-            else:
-                timestamp_str = str(timestamp)
-
-            events_json = self.seleniumHelper.execute(f'''
-                const lastTimestamp = '{timestamp_str}';
-                const allNewEvents = window.getNewSpeakingEvents();
-                const filteredEvents = allNewEvents.filter(event => event.timestamp > lastTimestamp);
-                return filteredEvents;
-            ''')
-            events = events_json if events_json else []
-            if clear_after and events:
-                event_ids = [e['id'] for e in events]
-                self.seleniumHelper.execute(f'''
-                    window.clearSpeakingEvents({event_ids});
-                ''')
-            return events
-
-        def get_events_since_last(clear_after=True):
-            events_json = self.seleniumHelper.execute('''
-                const newEvents = window.getNewSpeakingEvents();
-                if (newEvents.length > 0) {
-                    const lastEventId = newEvents[newEvents.length - 1].id;
-                    window.lastProcessedEventIndex = lastEventId + 1;
-                }
-                return newEvents;
-            ''')
-            events = events_json if events_json else []
-            if clear_after and events:
-                event_ids = [e['id'] for e in events]
-                self.seleniumHelper.execute(f'''
-                    window.clearSpeakingEvents({event_ids});
-                ''')
-            return events
-
-        def clear_all_events():
-            self.seleniumHelper.execute('''
-                window.clearAllSpeakingEvents();
-            ''')
-
-        def get_all_events():
-            events_json = self.seleniumHelper.execute('''
-                return window.speakingEvents;
-            ''')
-            return events_json if events_json else []
-
-        def stop_monitoring():
-            self.seleniumHelper.execute('''
-                if (window.storeUnsubscribe) {
-                    window.storeUnsubscribe();
-                }
-                if (window.fallbackInterval) {
-                    clearInterval(window.fallbackInterval);
-                }
-                if (window.speakingObserver) {
-                    window.speakingObserver.disconnect();
-                }
-                if (window.domObserver) {
-                    window.domObserver.disconnect();
-                }
-                console.log('[SpeakingMonitor] Stopped monitoring');
-            ''')
-            return get_all_events()
-
-        return {
-            'get_events_since': get_events_since,
-            'get_events_since_last': get_events_since_last,
-            'clear_all': clear_all_events,
-            'get_all': get_all_events,
-            'stop': stop_monitoring
         }
