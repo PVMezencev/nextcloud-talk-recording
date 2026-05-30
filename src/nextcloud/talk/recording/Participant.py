@@ -340,7 +340,6 @@ class SeleniumHelper:
             msgs.append(msg)
         return msgs
 
-
     def execute(self, script):
         """
         Executes the given script.
@@ -569,272 +568,20 @@ class Participant():
             if (!window.lastProcessedEventIndex) {{
                 window.lastProcessedEventIndex = 0;
             }}
-
-            // Функция для добавления события в лог
-            window.addSpeakingEvent = (userId, action, duration = null) => {{
-                const timestamp = new Date().toISOString();
-                const event = {{
-                    id: window.speakingEvents.length,
-                    timestamp: timestamp,
-                    userId: userId,
-                    action: action, // 'start' или 'stop'
-                    duration: duration,
-                    createdAt: Date.now()
-                }};
-                window.speakingEvents.push(event);
-                console.log(`[SpeakingMonitor] ${{userId}} ${{action}} speaking at ${{timestamp}}`);
-            }};
-
-            // Функция для получения текущего состояния участников через store
-            window.getCurrentSpeakingState = () => {{
-                const speakingState = {{}};
-                if (window.globalThis?.store?.state?.participantsStore?.speaking) {{
-                    Object.entries(window.globalThis?.store.state.participantsStore.speaking).forEach(([attendeeId, isSpeaking]) => {{
-                        speakingState[attendeeId] = isSpeaking;
-                    }});
-                }}
-                return speakingState;
-            }};
-
-            // Функция для получения новых событий
-            window.getNewSpeakingEvents = () => {{
-                const lastIndex = window.lastProcessedEventIndex;
-                const newEvents = window.speakingEvents.slice(lastIndex);
-                return newEvents;
-            }};
-
-            // Функция для очистки переданных событий
-            window.clearSpeakingEvents = (eventIds) => {{
-                if (!eventIds || eventIds.length === 0) {{
-                    return;
-                }}
-                window.speakingEvents = window.speakingEvents.filter(event => !eventIds.includes(event.id));
-                const maxDeletedId = Math.max(...eventIds);
-                const newFirstIndex = window.speakingEvents.findIndex(event => event.id > maxDeletedId);
-                window.lastProcessedEventIndex = newFirstIndex === -1 ? window.speakingEvents.length : newFirstIndex;
-                console.log(`[SpeakingMonitor] Cleared ${{eventIds.length}} events, remaining: ${{window.speakingEvents.length}}`);
-            }};
-
-            // Функция для полной очистки
-            window.clearAllSpeakingEvents = () => {{
-                window.speakingEvents = [];
-                window.lastProcessedEventIndex = 0;
-                console.log('[SpeakingMonitor] All events cleared');
-            }};
-
-            // Перехватываем store.dispatch для отслеживания speaking событий
-            const store = window.globalThis?.store;
+            const store = window.globalThis.store;
             if (store) {{
                 const originalDispatch = store.dispatch;
                 store.dispatch = function(action, payload) {{
                     if (action === 'setSpeaking' || action === 'participantsStore/setSpeaking') {{
-                        const userId = payload?.attendeeId;
-                        const isSpeaking = payload?.speaking;
-
-                        if (userId) {{
-                            if (isSpeaking) {{
-                                window.addSpeakingEvent(userId, 'start');
-                            }} else {{
-                                // Ищем последнее событие start для вычисления длительности
-                                let startEvent = null;
-                                for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                                    if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                        startEvent = window.speakingEvents[i];
-                                        break;
-                                    }}
-                                }}
-                                const duration = startEvent ? (Date.now() - startEvent.createdAt) / 1000 : null;
-                                window.addSpeakingEvent(userId, 'stop', duration);
-                            }}
-                        }}
+                        window.speakingEvents.push({{
+                            'action': action,
+                            'payload': payload,
+                        }})
                     }}
                     return originalDispatch.call(this, action, payload);
                 }};
             }}
-
-            // Также отслеживаем localMediaModel для локального пользователя
-            if (window.localMediaModel && !window.localMediaModelHooked) {{
-                let originalSpeaking = window.localMediaModel.attributes?.speaking;
-
-                const observeLocalSpeaking = setInterval(() => {{
-                    if (window.localMediaModel?.attributes) {{
-                        const currentSpeaking = window.localMediaModel.attributes.speaking;
-                        if (currentSpeaking !== originalSpeaking) {{
-                            const userId = 'local_user';
-                            if (currentSpeaking) {{
-                                window.addSpeakingEvent(userId, 'start');
-                            }} else {{
-                                let startEvent = null;
-                                for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                                    if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                        startEvent = window.speakingEvents[i];
-                                        break;
-                                    }}
-                                }}
-                                const duration = startEvent ? (Date.now() - startEvent.createdAt) / 1000 : null;
-                                window.addSpeakingEvent(userId, 'stop', duration);
-                            }}
-                            originalSpeaking = currentSpeaking;
-                        }}
-                    }}
-                }}, 200);
-
-                window.localMediaModelHooked = true;
-                window.localMediaModelInterval = observeLocalSpeaking;
-            }}
-
-            // Отслеживаем callParticipantCollection для всех участников
-            if (window.callParticipantCollection && !window.callParticipantCollectionHooked) {{
-                const observeParticipants = setInterval(() => {{
-                    if (window.callParticipantCollection?.callParticipantModels) {{
-                        window.callParticipantCollection.callParticipantModels.forEach(model => {{
-                            if (model.attributes && !model._speakingObserved) {{
-                                let originalSpeaking = model.attributes.speaking;
-                                const userId = model.attributes.name || model.attributes.attendeeId || 'unknown';
-
-                                Object.defineProperty(model.attributes, 'speaking', {{
-                                    get: () => originalSpeaking,
-                                    set: (value) => {{
-                                        if (value !== originalSpeaking) {{
-                                            if (value) {{
-                                                window.addSpeakingEvent(userId, 'start');
-                                            }} else {{
-                                                let startEvent = null;
-                                                for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                                                    if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                                        startEvent = window.speakingEvents[i];
-                                                        break;
-                                                    }}
-                                                }}
-                                                const duration = startEvent ? (Date.now() - startEvent.createdAt) / 1000 : null;
-                                                window.addSpeakingEvent(userId, 'stop', duration);
-                                            }}
-                                            originalSpeaking = value;
-                                        }}
-                                    }},
-                                    configurable: true
-                                }});
-                                model._speakingObserved = true;
-                            }}
-                        }});
-                    }}
-                }}, 500);
-
-                window.callParticipantCollectionHooked = true;
-                window.callParticipantCollectionInterval = observeParticipants;
-            }}
-
-            // Инициализируем предыдущее состояние из store
-            if (!window.previousSpeakingState) {{
-                window.previousSpeakingState = window.getCurrentSpeakingState();
-            }}
-
-            // Fallback периодическая проверка на случай пропущенных событий
-            if (window.speakingFallbackInterval) {{
-                clearInterval(window.speakingFallbackInterval);
-            }}
-
-            window.speakingFallbackInterval = setInterval(() => {{
-                const currentState = window.getCurrentSpeakingState();
-
-                for (const [userId, isSpeakingNow] of Object.entries(currentState)) {{
-                    const wasSpeaking = window.previousSpeakingState[userId] || false;
-
-                    if (!wasSpeaking && isSpeakingNow) {{
-                        window.addSpeakingEvent(userId, 'start');
-                    }} else if (wasSpeaking && !isSpeakingNow) {{
-                        let startEvent = null;
-                        for (let i = window.speakingEvents.length - 1; i >= 0; i--) {{
-                            if (window.speakingEvents[i].userId === userId && window.speakingEvents[i].action === 'start') {{
-                                startEvent = window.speakingEvents[i];
-                                break;
-                            }}
-                        }}
-                        const duration = startEvent ? (Date.now() - startEvent.createdAt) / 1000 : null;
-                        window.addSpeakingEvent(userId, 'stop', duration);
-                    }}
-                }}
-
-                window.previousSpeakingState = currentState;
-            }}, 500);
-
-            console.log('[SpeakingMonitor] Started monitoring via Nextcloud Talk internal handlers');
         ''')
-
-        def get_events_since(timestamp=None, clear_after=False):
-            """
-            Returns events that occurred after the given timestamp.
-
-            :param timestamp: ISO format timestamp string or datetime object
-            :param clear_after: If True, clears all events up to and including the last returned event
-            :return: list of events that occurred after the timestamp
-            """
-            if timestamp is None:
-                events_json = self.seleniumHelper.execute('''
-                    const newEvents = window.getNewSpeakingEvents();
-                    return newEvents;
-                ''')
-                events = events_json if events_json else []
-
-                if clear_after and events:
-                    event_ids = [e['id'] for e in events]
-                    self.seleniumHelper.execute(f'''
-                        window.clearSpeakingEvents({event_ids});
-                    ''')
-                return events
-
-            if hasattr(timestamp, 'isoformat'):
-                timestamp_str = timestamp.isoformat()
-            else:
-                timestamp_str = str(timestamp)
-
-            events_json = self.seleniumHelper.execute(f'''
-                const lastTimestamp = '{timestamp_str}';
-                const allNewEvents = window.getNewSpeakingEvents();
-                const filteredEvents = allNewEvents.filter(event => event.timestamp > lastTimestamp);
-                return filteredEvents;
-            ''')
-            events = events_json if events_json else []
-
-            if clear_after and events:
-                event_ids = [e['id'] for e in events]
-                self.seleniumHelper.execute(f'''
-                    window.clearSpeakingEvents({event_ids});
-                ''')
-            return events
-
-        def get_events_since_last(clear_after=True):
-            """
-            Returns events that occurred since the last call to this function.
-            Automatically clears events after retrieving them.
-
-            :param clear_after: If True, clears events after retrieval
-            :return: list of new events
-            """
-            events_json = self.seleniumHelper.execute('''
-                const newEvents = window.getNewSpeakingEvents();
-
-                if (newEvents.length > 0) {
-                    const lastEventId = newEvents[newEvents.length - 1].id;
-                    window.lastProcessedEventIndex = lastEventId + 1;
-                }
-
-                return newEvents;
-            ''')
-            events = events_json if events_json else []
-
-            if clear_after and events:
-                event_ids = [e['id'] for e in events]
-                self.seleniumHelper.execute(f'''
-                    window.clearSpeakingEvents({event_ids});
-                ''')
-            return events
-
-        def clear_all_events():
-            """Clears all events from the browser storage."""
-            self.seleniumHelper.execute('''
-                window.clearAllSpeakingEvents();
-            ''')
 
         def get_all_events():
             """Returns all events without clearing them."""
@@ -865,7 +612,6 @@ class Participant():
                     clearInterval(window.callParticipantCollectionInterval);
                 }
 
-                console.log('[SpeakingMonitor] Stopped monitoring');
             ''')
             return get_all_events()
 
@@ -881,11 +627,7 @@ class Participant():
             ''')
             return events_json if events_json else {}
 
-
         return {
-            'get_events_since': get_events_since,
-            'get_events_since_last': get_events_since_last,
-            'clear_all': clear_all_events,
             'get_all': get_all_events,
             'stop': stop_monitoring,
             'console': printConsoleLog
