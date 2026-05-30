@@ -553,58 +553,359 @@ class Participant():
     def startMonitoringSpeaking(self):
         """
         Starts monitoring who is speaking in the call using direct Nextcloud Talk internal handlers.
-
-        Injects JavaScript that hooks into the SpeakingStatusHandler and store.dispatch
-        to capture speaking events in real-time. Returns functions to manage events.
-
-        :return: a dict with methods to interact with the monitoring
         """
 
-        self.seleniumHelper.execute(f'''
-            if (!window.speakingEvents) {{
+        js_code = '''
+        (function() {
+            // Инициализируем массивы для событий
+            if (!window.speakingEvents) {
                 window.speakingEvents = [];
-            }}
+            }
+            window.lastProcessedEventIndex = 0;
 
-            if (!window.lastProcessedEventIndex) {{
-                window.lastProcessedEventIndex = 0;
-            }}
-            const store = window.globalThis.store;
-            if (store) {{
-                const originalDispatch = store.dispatch;
-                store.dispatch = function(action, payload) {{
-                    if (action === 'setSpeaking' || action === 'participantsStore/setSpeaking') {{
-                        window.speakingEvents.push({{
-                            'action': action,
-                            'payload': payload,
-                        }})
-                    }}
-                    return originalDispatch.call(this, action, payload);
-                }};
-            }}
-        ''')
+            // ============================================
+            // СПОСОБ 1: Перехват store.dispatch
+            // ============================================
+            function setupStoreInterceptor() {
+                const store = window.globalThis?.store;
+                if (store && !store._dispatchIntercepted) {
+                    store._dispatchIntercepted = true;
+                    window.originalDispatch = store.dispatch;
+
+                    store.dispatch = function(action, payload) {
+                        // Перехватываем только setSpeaking
+                        if (action === 'setSpeaking' || 
+                            action === 'participantsStore/setSpeaking' ||
+                            (typeof action === 'string' && action.includes('setSpeaking'))) {
+
+                            window.speakingEvents.push({
+                                timestamp: Date.now(),
+                                type: 'dispatch',
+                                action: action,
+                                payload: payload,
+                                source: 'store.dispatch'
+                            });
+
+                            // Логируем в консоль для отладки
+                            console.log('[SPEAKING MONITOR] Dispatch:', action, payload);
+                        }
+                        return window.originalDispatch.call(this, action, payload);
+                    };
+                    console.log('[SPEAKING MONITOR] Store interceptor installed');
+                    return true;
+                }
+                return false;
+            }
+
+            // ============================================
+            // СПОСОБ 2: Прямое наблюдение за localMediaModel
+            // ============================================
+            function setupLocalMediaObserver() {
+                if (window.localMediaModel && !window.localMediaModel._observed) {
+                    window.localMediaModel._observed = true;
+
+                    // Сохраняем оригинальное значение
+                    let lastSpeakingState = window.localMediaModel.attributes?.speaking;
+
+                    // Создаем наблюдатель за изменениями
+                    const observer = new MutationObserver(function() {
+                        const currentState = window.localMediaModel.attributes?.speaking;
+                        if (currentState !== lastSpeakingState) {
+                            window.speakingEvents.push({
+                                timestamp: Date.now(),
+                                type: 'local_speaking_change',
+                                speaking: currentState,
+                                previous: lastSpeakingState,
+                                source: 'localMediaModel'
+                            });
+                            console.log('[SPEAKING MONITOR] Local speaking changed:', lastSpeakingState, '->', currentState);
+                            lastSpeakingState = currentState;
+                        }
+                    });
+
+                    // Наблюдаем за изменениями attributes
+                    if (window.localMediaModel.attributes) {
+                        observer.observe(window.localMediaModel.attributes, {
+                            attributes: true,
+                            attributeFilter: ['speaking']
+                        });
+                    }
+
+                    // Фолбэк: интервальная проверка
+                    window.localMediaModelInterval = setInterval(() => {
+                        const currentState = window.localMediaModel.attributes?.speaking;
+                        if (currentState !== lastSpeakingState) {
+                            window.speakingEvents.push({
+                                timestamp: Date.now(),
+                                type: 'local_speaking_interval',
+                                speaking: currentState,
+                                previous: lastSpeakingState,
+                                source: 'localMediaModel'
+                            });
+                            lastSpeakingState = currentState;
+                        }
+                    }, 200);
+
+                    console.log('[SPEAKING MONITOR] LocalMediaModel observer installed');
+                    return true;
+                }
+                return false;
+            }
+
+            // ============================================
+            // СПОСОБ 3: Наблюдение за callParticipantCollection
+            // ============================================
+            function setupCallParticipantObserver() {
+                if (window.callParticipantCollection && !window.callParticipantCollection._observed) {
+                    window.callParticipantCollection._observed = true;
+
+                    // Отслеживаем добавление новых участников
+                    const originalAdd = window.callParticipantCollection.add;
+                    if (originalAdd) {
+                        window.callParticipantCollection.add = function(model) {
+                            observeParticipantModel(model);
+                            return originalAdd.call(this, model);
+                        };
+                    }
+
+                    // Наблюдаем за существующими участниками
+                    if (window.callParticipantCollection.callParticipantModels) {
+                        window.callParticipantCollection.callParticipantModels.forEach(model => {
+                            observeParticipantModel(model);
+                        });
+                    }
+
+                    // Функция для наблюдения за моделью участника
+                    function observeParticipantModel(model) {
+                        if (model._speakingObserved) return;
+                        model._speakingObserved = true;
+
+                        let lastSpeakingState = model.attributes?.speaking;
+
+                        // Наблюдаем за изменениями атрибутов
+                        if (model.attributes) {
+                            const observer = new MutationObserver(function() {
+                                const currentState = model.attributes?.speaking;
+                                if (currentState !== lastSpeakingState) {
+                                    window.speakingEvents.push({
+                                        timestamp: Date.now(),
+                                        type: 'participant_speaking_change',
+                                        participantId: model.attributes?.peerId,
+                                        participantName: model.attributes?.name,
+                                        speaking: currentState,
+                                        previous: lastSpeakingState,
+                                        source: 'callParticipantModel'
+                                    });
+                                    lastSpeakingState = currentState;
+                                }
+                            });
+
+                            observer.observe(model.attributes, {
+                                attributes: true,
+                                attributeFilter: ['speaking']
+                            });
+                        }
+                    }
+
+                    // Интервальная проверка всех участников
+                    window.callParticipantCollectionInterval = setInterval(() => {
+                        if (window.callParticipantCollection.callParticipantModels) {
+                            window.callParticipantCollection.callParticipantModels.forEach(model => {
+                                const currentState = model.attributes?.speaking;
+                                if (currentState !== model._lastObservedSpeaking) {
+                                    window.speakingEvents.push({
+                                        timestamp: Date.now(),
+                                        type: 'participant_speaking_interval',
+                                        participantId: model.attributes?.peerId,
+                                        participantName: model.attributes?.name,
+                                        speaking: currentState,
+                                        previous: model._lastObservedSpeaking,
+                                        source: 'callParticipantModel'
+                                    });
+                                    model._lastObservedSpeaking = currentState;
+                                }
+                            });
+                        }
+                    }, 200);
+
+                    console.log('[SPEAKING MONITOR] CallParticipant observer installed');
+                    return true;
+                }
+                return false;
+            }
+
+            // ============================================
+            // СПОСОБ 4: Перехват WebSocket сообщений
+            // ============================================
+            function setupWebSocketInterceptor() {
+                if (window.WebSocket && !window._websocketIntercepted) {
+                    window._websocketIntercepted = true;
+                    const OriginalWebSocket = window.WebSocket;
+
+                    window.WebSocket = function(...args) {
+                        const ws = new OriginalWebSocket(...args);
+
+                        ws.addEventListener('message', function(event) {
+                            try {
+                                const data = JSON.parse(event.data);
+                                // Проверяем наличие speaking данных
+                                if (data.type === 'speaking' || 
+                                    data.data?.speaking !== undefined ||
+                                    data.speaking !== undefined) {
+                                    window.speakingEvents.push({
+                                        timestamp: Date.now(),
+                                        type: 'websocket_message',
+                                        data: data,
+                                        source: 'websocket'
+                                    });
+                                }
+                            } catch(e) {}
+                        });
+
+                        return ws;
+                    };
+
+                    window.WebSocket.prototype = OriginalWebSocket.prototype;
+                    console.log('[SPEAKING MONITOR] WebSocket interceptor installed');
+                    return true;
+                }
+                return false;
+            }
+
+            // ============================================
+            // СПОСОБ 5: Мониторинг через DOM (fallback)
+            // ============================================
+            function setupDOMObserver() {
+                if (!window._domObserverInstalled) {
+                    window._domObserverInstalled = true;
+
+                    let lastSpeakingElements = [];
+
+                    setInterval(() => {
+                        // Ищем элементы с классом speaking
+                        const speakingElements = document.querySelectorAll('.speaking, [class*="speaking"]');
+                        const currentSpeakers = [];
+
+                        speakingElements.forEach(el => {
+                            const nameEl = el.querySelector('.video-name, .participant-name, [class*="name"]');
+                            if (nameEl) {
+                                currentSpeakers.push(nameEl.textContent.trim());
+                            }
+                        });
+
+                        if (JSON.stringify(currentSpeakers) !== JSON.stringify(lastSpeakingElements)) {
+                            window.speakingEvents.push({
+                                timestamp: Date.now(),
+                                type: 'dom_speaking_change',
+                                speakers: currentSpeakers,
+                                previous: lastSpeakingElements,
+                                source: 'dom'
+                            });
+                            lastSpeakingElements = currentSpeakers;
+                        }
+                    }, 500);
+
+                    console.log('[SPEAKING MONITOR] DOM observer installed');
+                    return true;
+                }
+                return false;
+            }
+
+            // ============================================
+            // СПОСОБ 6: Периодическая проверка store (fallback)
+            // ============================================
+            function setupStorePolling() {
+                if (!window._storePollingInstalled) {
+                    window._storePollingInstalled = true;
+
+                    let lastSpeakingState = {};
+
+                    setInterval(() => {
+                        const store = window.globalThis?.store;
+                        if (store && store.state?.participantsStore?.speaking) {
+                            const currentSpeaking = {};
+                            for (const [id, info] of Object.entries(store.state.participantsStore.speaking)) {
+                                if (info.speaking) {
+                                    currentSpeaking[id] = info;
+                                }
+                            }
+
+                            const currentJson = JSON.stringify(currentSpeaking);
+                            const lastJson = JSON.stringify(lastSpeakingState);
+
+                            if (currentJson !== lastJson) {
+                                window.speakingEvents.push({
+                                    timestamp: Date.now(),
+                                    type: 'store_polling',
+                                    speakingState: currentSpeaking,
+                                    previousState: lastSpeakingState,
+                                    source: 'store'
+                                });
+                                lastSpeakingState = currentSpeaking;
+                            }
+                        }
+                    }, 300);
+
+                    console.log('[SPEAKING MONITOR] Store polling installed');
+                    return true;
+                }
+                return false;
+            }
+
+            // ============================================
+            // ЗАПУСК ВСЕХ ПЕРЕХВАТЧИКОВ
+            // ============================================
+
+            // Ждем загрузки страницы
+            function installAll() {
+                setupStoreInterceptor();
+                setupLocalMediaObserver();
+                setupCallParticipantObserver();
+                setupWebSocketInterceptor();
+                setupDOMObserver();
+                setupStorePolling();
+
+                // Сохраняем состояние store для отладки
+                window.speakingMonitorReady = true;
+                console.log('[SPEAKING MONITOR] All interceptors installed');
+                console.log('[SPEAKING MONITOR] Store available:', !!window.globalThis?.store);
+                console.log('[SPEAKING MONITOR] localMediaModel available:', !!window.localMediaModel);
+                console.log('[SPEAKING MONITOR] callParticipantCollection available:', !!window.callParticipantCollection);
+            }
+
+            // Запускаем немедленно и повторяем через 1 секунду (на случай если объекты еще не загрузились)
+            installAll();
+            setTimeout(installAll, 1000);
+            setTimeout(installAll, 3000);
+
+            return true;
+        })();
+        '''
+
+        self.seleniumHelper.execute(js_code)
 
         def get_all_events():
-            """Returns all events without clearing them."""
+            """Returns all captured events."""
             events_json = self.seleniumHelper.execute('''
-                return window.speakingEvents;
+                return window.speakingEvents || [];
+            ''')
+            return events_json if events_json else []
+
+        def get_new_events():
+            """Returns only new events since last call and clears them."""
+            events_json = self.seleniumHelper.execute('''
+                const events = window.speakingEvents || [];
+                const lastIndex = window.lastProcessedEventIndex || 0;
+                const newEvents = events.slice(lastIndex);
+                window.lastProcessedEventIndex = events.length;
+                return newEvents;
             ''')
             return events_json if events_json else []
 
         def stop_monitoring():
             """Stops the monitoring and returns all remaining events."""
             self.seleniumHelper.execute('''
-                // Восстанавливаем оригинальный dispatch
-                if (window.originalDispatch) {
-                    const store = window.globalThis?.store;
-                    if (store) {
-                        store.dispatch = window.originalDispatch;
-                    }
-                }
-
                 // Очищаем интервалы
-                if (window.speakingFallbackInterval) {
-                    clearInterval(window.speakingFallbackInterval);
-                }
                 if (window.localMediaModelInterval) {
                     clearInterval(window.localMediaModelInterval);
                 }
@@ -612,23 +913,62 @@ class Participant():
                     clearInterval(window.callParticipantCollectionInterval);
                 }
 
+                // Восстанавливаем store.dispatch
+                if (window.originalDispatch) {
+                    const store = window.globalThis?.store;
+                    if (store && store._dispatchIntercepted) {
+                        store.dispatch = window.originalDispatch;
+                        delete store._dispatchIntercepted;
+                    }
+                }
+
+                console.log('[SPEAKING MONITOR] Monitoring stopped');
             ''')
             return get_all_events()
 
-        def printConsoleLog():
-            events_json = self.seleniumHelper.execute('''
-                let callParticipantModels = {}
-                if (window.callParticipantCollection) callParticipantModels = window.callParticipantCollection.callParticipantModels
+        def get_debug_info():
+            """Returns debug information about available objects."""
+            debug_info = self.seleniumHelper.execute('''
                 return {
-                    'participantsStore': window.globalThis?.store?.state?.participantsStore,
-                    'callParticipantModels':  callParticipantModels,
-                    'localMediaModel':  window.localMediaModel
-                }
+                    storeAvailable: !!window.globalThis?.store,
+                    localMediaModelAvailable: !!window.localMediaModel,
+                    callParticipantCollectionAvailable: !!window.callParticipantCollection,
+                    speakingEventsCount: window.speakingEvents?.length || 0,
+                    storeSpeakingState: window.globalThis?.store?.state?.participantsStore?.speaking || {},
+                    localMediaModelSpeaking: window.localMediaModel?.attributes?.speaking || false,
+                    callParticipantModelsCount: window.callParticipantCollection?.callParticipantModels?.length || 0
+                };
             ''')
-            return events_json if events_json else {}
+            return debug_info
+
+        def force_check():
+            """Force check current speaking status."""
+            status = self.seleniumHelper.execute('''
+                const store = window.globalThis?.store;
+                const speaking = store?.state?.participantsStore?.speaking || {};
+                const attendees = store?.state?.participantsStore?.attendees || {};
+                const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
+
+                const result = [];
+                for (const [id, info] of Object.entries(speaking)) {
+                    if (info.speaking) {
+                        const attendee = attendees[token]?.[id] || {};
+                        result.push({
+                            attendeeId: id,
+                            name: attendee.displayName || attendee.actorId || 'Unknown',
+                            speaking: info.speaking,
+                            totalTimeMs: info.totalCountedTime
+                        });
+                    }
+                }
+                return result;
+            ''')
+            return status
 
         return {
             'get_all': get_all_events,
+            'get_new': get_new_events,
             'stop': stop_monitoring,
-            'console': printConsoleLog
+            'debug': get_debug_info,
+            'force_check': force_check
         }
