@@ -113,7 +113,7 @@ def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
     while True:
         # Проверка состояния
         debug_info = monitor['debug']()
-        print("Debug info:", debug_info)
+        logger.log(level, f"Debug info: {debug_info}")
 
         try:
             events = monitor['get_all']()
