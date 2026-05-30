@@ -332,6 +332,15 @@ class SeleniumHelper:
         for log in self.driver.get_log('browser'):
             self._logger.debug(log['message'])
 
+    def printConsoleLog(self):
+        msgs = []
+        for log in self.driver.get_log('browser'):
+            msg = log['message']
+            self._logger.debug(msg)
+            msgs.append(msg)
+        return msgs
+
+
     def execute(self, script):
         """
         Executes the given script.
@@ -876,5 +885,5 @@ class Participant():
             'clear_all': clear_all_events,
             'get_all': get_all_events,
             'stop': stop_monitoring,
-            'console': self.seleniumHelper.printLogs
+            'console': self.seleniumHelper.printConsoleLog
         }
