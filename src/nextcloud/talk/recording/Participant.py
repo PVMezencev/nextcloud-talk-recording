@@ -573,13 +573,14 @@ class Participant():
                     createdAt: Date.now()
                 }};
                 window.speakingEvents.push(event);
+                console.log(`[SpeakingMonitor] ${{userId}} ${{action}} speaking at ${{timestamp}}`);
             }};
 
             // Функция для получения текущего состояния участников через store
             window.getCurrentSpeakingState = () => {{
                 const speakingState = {{}};
-                if (globalThis.store?.state?.participantsStore?.speaking) {{
-                    Object.entries(globalThis.store.state.participantsStore.speaking).forEach(([attendeeId, isSpeaking]) => {{
+                if (window.globalThis?.store?.state?.participantsStore?.speaking) {{
+                    Object.entries(window.globalThis?.store.state.participantsStore.speaking).forEach(([attendeeId, isSpeaking]) => {{
                         speakingState[attendeeId] = isSpeaking;
                     }});
                 }}
@@ -602,24 +603,26 @@ class Participant():
                 const maxDeletedId = Math.max(...eventIds);
                 const newFirstIndex = window.speakingEvents.findIndex(event => event.id > maxDeletedId);
                 window.lastProcessedEventIndex = newFirstIndex === -1 ? window.speakingEvents.length : newFirstIndex;
+                console.log(`[SpeakingMonitor] Cleared ${{eventIds.length}} events, remaining: ${{window.speakingEvents.length}}`);
             }};
 
             // Функция для полной очистки
             window.clearAllSpeakingEvents = () => {{
                 window.speakingEvents = [];
                 window.lastProcessedEventIndex = 0;
+                console.log('[SpeakingMonitor] All events cleared');
             }};
 
             // Сохраняем оригинальный dispatch если нужно будет остановить
             if (!window.originalDispatch) {{
-                const store = globalThis.store;
+                const store = window.globalThis?.store;
                 if (store && store.dispatch) {{
                     window.originalDispatch = store.dispatch;
                 }}
             }}
 
             // Перехватываем store.dispatch для отслеживания speaking событий
-            const store = globalThis.store;
+            const store = window.globalThis?.store;
             if (store && !window.speakingDispatchHooked) {{
                 const originalDispatch = store.dispatch;
                 store.dispatch = function(action, payload) {{
@@ -647,6 +650,7 @@ class Participant():
                     return originalDispatch.call(this, action, payload);
                 }};
                 window.speakingDispatchHooked = true;
+                console.log('[SpeakingMonitor] Hooked into store.dispatch');
             }}
 
             // Также отслеживаем localMediaModel для локального пользователя
@@ -754,6 +758,8 @@ class Participant():
 
                 window.previousSpeakingState = currentState;
             }}, 500);
+
+            console.log('[SpeakingMonitor] Started monitoring via Nextcloud Talk internal handlers');
         ''')
 
         def get_events_since(timestamp=None, clear_after=False):
@@ -843,7 +849,7 @@ class Participant():
             self.seleniumHelper.execute('''
                 // Восстанавливаем оригинальный dispatch
                 if (window.originalDispatch && window.speakingDispatchHooked) {
-                    const store = globalThis.store;
+                    const store = window.globalThis?.store;
                     if (store) {
                         store.dispatch = window.originalDispatch;
                     }
@@ -859,6 +865,8 @@ class Participant():
                 if (window.callParticipantCollectionInterval) {
                     clearInterval(window.callParticipantCollectionInterval);
                 }
+
+                console.log('[SpeakingMonitor] Stopped monitoring');
             ''')
             return get_all_events()
 
@@ -867,5 +875,6 @@ class Participant():
             'get_events_since_last': get_events_since_last,
             'clear_all': clear_all_events,
             'get_all': get_all_events,
-            'stop': stop_monitoring
+            'stop': stop_monitoring,
+            'console': self.seleniumHelper.printLogs
         }

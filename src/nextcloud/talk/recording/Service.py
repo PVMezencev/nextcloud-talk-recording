@@ -112,6 +112,10 @@ def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
     wr = open(fn, 'w')
     while True:
         try:
+            logger.log(level, f"console: {monitor['console']()}")
+        except Exception as e:
+            logger.log(level, f"console error: {e}")
+        try:
             events = monitor['get_events_since_last']()
         except KeyError:
             logger.log(level, f"KeyError get_events_since_last: {monitor}")
