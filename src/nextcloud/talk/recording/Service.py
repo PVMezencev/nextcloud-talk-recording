@@ -103,76 +103,40 @@ def processLog(loggerName, textIoWrapper, level=logging.INFO):
 
 
 def processSpeakersLog(monitor, fn, loggerName, level=logging.INFO):
+    """
+    Polls the browser for speaker log lines and writes them to fn.
+
+    Runs until the monitor is stopped (signalled by the recording stop).
+    """
     logger = logging.getLogger(loggerName)
-    logger.log(level, f"Старт мониторинга говорящих (speaker mode)")
-
-    # Даем время на инициализацию
-    time.sleep(5)
-
-    # Проверяем текущее состояние
-    debug_info = monitor['debug']()
-    logger.log(level, f"Debug info: {debug_info}")
-
-    # Принудительная проверка
-    force = monitor['force_check']()
-    logger.log(level, f"Initial speakers: {force}")
+    logger.log(level, "Speaker monitoring started")
 
     wr = open(fn, 'w', encoding='utf-8')
-    last_speakers = set()
-    no_events_counter = 0
+    try:
+        while True:
+            time.sleep(2)
 
-    while True:
-        time.sleep(1)  # Проверяем раз в секунду
-
-
-        debug_speaker = monitor['debug_speaker']()
-        logger.log(level, f"DEBUG {debug_speaker}")
-        # Получаем текущих говорящих
-        try:
-            current = monitor['force_check']()
-        except Exception as e:
-            logger.log(level, f"Error in force_check: {e}")
-            break
-
-        if current and 'speakers' in current:
-            current_speakers = {s['name'] for s in current['speakers']}
-
-            # Новые говорящие
-            for speaker in current_speakers - last_speakers:
-                msg = f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 {speaker} начал говорить"
-                logger.log(level, msg)
-                wr.write(msg + '\n')
-                wr.flush()
-
-            # Закончившие говорить
-            for speaker in last_speakers - current_speakers:
-                msg = f"[{datetime.now().strftime('%H:%M:%S')}] 🔴 {speaker} закончил говорить"
-                logger.log(level, msg)
-                wr.write(msg + '\n')
-                wr.flush()
-
-            last_speakers = current_speakers
-
-            if current_speakers:
-                no_events_counter = 0
-            else:
-                no_events_counter += 1
-        else:
-            no_events_counter += 1
-        # Проверяем, что мониторинг еще активен
-        if no_events_counter > 30:  # 30 секунд без активности
-            # Проверяем, не вышел ли участник из звонка
-            debug = monitor['debug']()
-            if debug.get('participantsInCall', 0) == 0:
-                logger.log(level, "No participants in call, stopping monitoring")
+            try:
+                lines = monitor['get_log_lines']()
+            except Exception:
                 break
 
-    wr.close()
+            if lines:
+                for line in lines:
+                    logger.log(level, line)
+                    wr.write(line + '\n')
+                    wr.flush()
+    finally:
+        wr.close()
 
-    try:
-        monitor['stop']()
-    except KeyError:
-        pass
+        remaining = monitor['stop']()
+        if remaining:
+            wr = open(fn, 'a', encoding='utf-8')
+            for line in remaining:
+                wr.write(line + '\n')
+            wr.close()
+
+        logger.log(level, "Speaker monitoring stopped")
 
 
 class Service:

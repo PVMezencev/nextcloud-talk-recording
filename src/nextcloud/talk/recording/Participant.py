@@ -552,395 +552,92 @@ class Participant():
 
     def startMonitoringSpeaking(self):
         """
-        Starts monitoring who is speaking in the call using direct Nextcloud Talk internal handlers.
-        Optimized for speaker mode (no microphone).
+        Starts monitoring who is speaking in the call by polling the Vuex
+        participantsStore.  Detected speaking start/stop events are collected
+        as plain log lines in window.speakerLogLines so the Python side can
+        retrieve them with a single execute() call.
+
+        Returns a dict with the keys:
+            - get_log_lines: returns list of new log lines since last call
+            - stop: stops the polling interval and flushes remaining lines
         """
 
         js_code = '''
         (function() {
-            // Инициализируем массивы для событий
-            if (!window.speakingEvents) {
-                window.speakingEvents = [];
-            }
-            window.lastProcessedEventIndex = 0;
+            window.speakerLogLines = [];
+            var lastSpeakerNames = {};
 
-            // ============================================
-            // ОСНОВНОЙ МЕТОД ДЛЯ SPEAKER РЕЖИМА
-            // ============================================
+            window._speakerMonitorInterval = setInterval(function() {
+                var store = window.globalThis && window.globalThis.store;
+                if (!store) return;
 
-            // 1. Мониторинг через WebSocket (основной источник в speaker режиме)
-            function setupWebSocketInterceptor() {
-                if (window.WebSocket && !window._websocketIntercepted) {
-                    window._websocketIntercepted = true;
-                    const OriginalWebSocket = window.WebSocket;
+                var participantsStore = store.state && store.state.participantsStore;
+                if (!participantsStore) return;
 
-                    window.WebSocket = function(...args) {
-                        const ws = new OriginalWebSocket(...args);
-                        const url = args[0];
+                var speaking = participantsStore.speaking || {};
+                var attendees = participantsStore.attendees || {};
+                var token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/);
+                if (!token) return;
+                token = token[1];
 
-                        ws.addEventListener('message', function(event) {
-                            try {
-                                const data = JSON.parse(event.data);
+                var tokenAttendees = attendees[token] || {};
+                var currentNames = {};
 
-                                // Логируем все сообщения для отладки
-                                if (data.type === 'message' || data.type === 'event') {
-                                    console.log('[WS]', data.type, data);
-                                }
+                for (var id in speaking) {
+                    if (!speaking.hasOwnProperty(id)) continue;
+                    if (speaking[id].speaking !== true) continue;
 
-                                // Проверяем наличие speaking данных
-                                if (data.type === 'speaking') {
-                                    window.speakingEvents.push({
-                                        timestamp: Date.now(),
-                                        type: 'websocket_speaking',
-                                        data: data,
-                                        source: 'websocket'
-                                    });
-                                    console.log('[SPEAKING] WebSocket speaking event:', data);
-                                }
+                    var attendee = tokenAttendees[id] || {};
+                    var name = attendee.displayName || attendee.actorId || 'Unknown';
+                    currentNames[name] = true;
 
-                                // Проверяем users-changed события (содержат speaking статус)
-                                if (data.type === 'users-changed' || (data.data && data.data.users)) {
-                                    const users = data.data?.users || data.users || [];
-                                    const speakingUsers = users.filter(u => u.speaking === true);
-                                    if (speakingUsers.length > 0) {
-                                        window.speakingEvents.push({
-                                            timestamp: Date.now(),
-                                            type: 'websocket_users_changed',
-                                            speakingUsers: speakingUsers,
-                                            allUsers: users,
-                                            source: 'websocket'
-                                        });
-                                        console.log('[SPEAKING] Users changed with speakers:', speakingUsers);
-                                    }
-                                }
-                            } catch(e) {}
-                        });
-
-                        return ws;
-                    };
-
-                    window.WebSocket.prototype = OriginalWebSocket.prototype;
-                    console.log('[SPEAKING MONITOR] WebSocket interceptor installed for speaker mode');
-                    return true;
-                }
-                return false;
-            }
-
-            // 2. Мониторинг через store polling (fallback)
-            function setupStorePolling() {
-                if (!window._storePollingInstalled) {
-                    window._storePollingInstalled = true;
-
-                    let lastSpeakingState = {};
-
-                    window.storePollingInterval = setInterval(() => {
-                        const store = window.globalThis?.store;
-                        if (store && store.state?.participantsStore) {
-                            const speaking = store.state.participantsStore.speaking || {};
-                            const attendees = store.state.participantsStore.attendees || {};
-                            const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
-
-                            const currentSpeaking = {};
-                            for (const [id, info] of Object.entries(speaking)) {
-                                if (info.speaking === true) {
-                                    const attendee = attendees[token]?.[id] || {};
-                                    currentSpeaking[id] = {
-                                        id: id,
-                                        name: attendee.displayName || attendee.actorId || 'Unknown',
-                                        speaking: info.speaking,
-                                        totalTimeMs: info.totalCountedTime || 0,
-                                        timestamp: info.lastTimestamp
-                                    };
-                                }
-                            }
-
-                            const currentJson = JSON.stringify(currentSpeaking);
-                            const lastJson = JSON.stringify(lastSpeakingState);
-
-                            if (currentJson !== lastJson && Object.keys(currentSpeaking).length > 0) {
-                                window.speakingEvents.push({
-                                    timestamp: Date.now(),
-                                    type: 'store_polling',
-                                    speakingState: currentSpeaking,
-                                    previousState: lastSpeakingState,
-                                    source: 'store'
-                                });
-                                console.log('[SPEAKING] Store polling detected speakers:', Object.keys(currentSpeaking));
-                                lastSpeakingState = currentSpeaking;
-                            } else if (Object.keys(currentSpeaking).length === 0 && Object.keys(lastSpeakingState).length > 0) {
-                                // Все замолчали
-                                window.speakingEvents.push({
-                                    timestamp: Date.now(),
-                                    type: 'store_polling',
-                                    speakingState: {},
-                                    previousState: lastSpeakingState,
-                                    source: 'store'
-                                });
-                                lastSpeakingState = {};
-                            }
-                        }
-                    }, 500);
-
-                    console.log('[SPEAKING MONITOR] Store polling installed');
-                    return true;
-                }
-                return false;
-            }
-
-            // 3. Мониторинг через DOM (визуальные индикаторы)
-            function setupDOMObserver() {
-                if (!window._domObserverInstalled) {
-                    window._domObserverInstalled = true;
-
-                    let lastSpeakers = [];
-
-                    window.domPollingInterval = setInterval(() => {
-                        // Ищем говорящих через CSS классы
-                        const currentSpeakers = [];
-
-                        // Метод 1: через класс 'speaking'
-                        document.querySelectorAll('.speaking, [class*="speaking-true"], [data-speaking="true"]').forEach(el => {
-                            const nameEl = el.querySelector('.video-name, .participant-name, [class*="name"]');
-                            if (nameEl) {
-                                currentSpeakers.push(nameEl.textContent.trim());
-                            }
-                        });
-
-                        // Метод 2: через границы видео (стиль)
-                        document.querySelectorAll('.video, .video-container').forEach(video => {
-                            const borderColor = window.getComputedStyle(video).borderColor;
-                            if (borderColor === 'rgb(0, 160, 210)' || borderColor === '#00a0d2') {
-                                const nameEl = video.querySelector('.video-name, .participant-name');
-                                if (nameEl) {
-                                    const name = nameEl.textContent.trim();
-                                    if (!currentSpeakers.includes(name)) {
-                                        currentSpeakers.push(name);
-                                    }
-                                }
-                            }
-                        });
-
-                        if (JSON.stringify(currentSpeakers) !== JSON.stringify(lastSpeakers) && currentSpeakers.length > 0) {
-                            window.speakingEvents.push({
-                                timestamp: Date.now(),
-                                type: 'dom_speaking',
-                                speakers: currentSpeakers,
-                                previous: lastSpeakers,
-                                source: 'dom'
-                            });
-                            console.log('[SPEAKING] DOM detected speakers:', currentSpeakers);
-                            lastSpeakers = currentSpeakers;
-                        }
-                    }, 300);
-
-                    console.log('[SPEAKING MONITOR] DOM observer installed');
-                    return true;
-                }
-                return false;
-            }
-
-            // 4. Прямой доступ к signaling (если доступен)
-            function setupSignalingAccess() {
-                if (window.OCA?.Talk?.signaling) {
-                    console.log('[SPEAKING] OCA.Talk.signaling available');
-
-                    // Сохраняем оригинальный обработчик
-                    const signaling = window.OCA.Talk.signaling;
-
-                    if (signaling._speakingMonitored) return;
-                    signaling._speakingMonitored = true;
-
-                    // Перехватываем метод обработки сообщений
-                    const originalOnMessage = signaling._onMessage;
-                    if (originalOnMessage) {
-                        signaling._onMessage = function(message) {
-                            if (message.type === 'speaking' || (message.data && message.data.speaking)) {
-                                window.speakingEvents.push({
-                                    timestamp: Date.now(),
-                                    type: 'signaling_direct',
-                                    message: message,
-                                    source: 'signaling'
-                                });
-                            }
-                            return originalOnMessage.call(this, message);
-                        };
+                    if (!lastSpeakerNames[name]) {
+                        var d = new Date();
+                        var ts = [d.getHours(), d.getMinutes(), d.getSeconds()]
+                            .map(function(v) { return String(v).padStart(2, '0'); }).join(':');
+                        window.speakerLogLines.push(
+                            '[' + ts + '] [' + name + '] [начал]'
+                        );
                     }
                 }
-            }
 
-            // 5. Периодическая проверка активных участников
-            function setupParticipantsPolling() {
-                if (!window._participantsPollingInstalled) {
-                    window._participantsPollingInstalled = true;
+                for (var name in lastSpeakerNames) {
+                    if (!lastSpeakerNames.hasOwnProperty(name)) continue;
+                    if (currentNames[name]) continue;
 
-                    window.participantsPollingInterval = setInterval(() => {
-                        const store = window.globalThis?.store;
-                        if (store && store.state?.participantsStore) {
-                            const inCall = store.state.participantsStore.inCall || {};
-                            const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
-                            const roomInCall = inCall[token] || {};
-
-                            // Проверяем, есть ли кто-то в звонке
-                            const participantsInCall = Object.keys(roomInCall).filter(sid => roomInCall[sid] !== 0);
-
-                            if (participantsInCall.length > 0 && !window._hasLoggedParticipants) {
-                                window._hasLoggedParticipants = true;
-                                window.speakingEvents.push({
-                                    timestamp: Date.now(),
-                                    type: 'participants_in_call',
-                                    count: participantsInCall.length,
-                                    sessions: participantsInCall,
-                                    source: 'store'
-                                });
-                                console.log('[SPEAKING] Participants in call:', participantsInCall.length);
-                            }
-                        }
-                    }, 2000);
+                    var d = new Date();
+                    var ts = [d.getHours(), d.getMinutes(), d.getSeconds()]
+                        .map(function(v) { return String(v).padStart(2, '0'); }).join(':');
+                    window.speakerLogLines.push(
+                        '[' + ts + '] [' + name + '] [закончил]'
+                    );
                 }
-            }
 
-            // ============================================
-            // ЗАПУСК
-            // ============================================
-
-            function installAll() {
-                console.log('[SPEAKING MONITOR] Installing interceptors for speaker mode...');
-
-                setupWebSocketInterceptor();
-                setupStorePolling();
-                setupDOMObserver();
-                setupSignalingAccess();
-                setupParticipantsPolling();
-
-                window.speakingMonitorReady = true;
-
-                // Выводим отладочную информацию
-                console.log('[SPEAKING MONITOR] Store available:', !!window.globalThis?.store);
-                console.log('[SPEAKING MONITOR] WebSocket available:', !!window.WebSocket);
-                console.log('[SPEAKING MONITOR] OCA.Talk available:', !!window.OCA?.Talk);
-            }
-
-            installAll();
-            setTimeout(installAll, 2000);
-            setTimeout(installAll, 5000);
-
-            return true;
+                lastSpeakerNames = currentNames;
+            }, 1000);
         })();
         '''
 
         self.seleniumHelper.execute(js_code)
 
-        def get_all_events():
-            """Returns all captured events."""
-            events_json = self.seleniumHelper.execute('''
-                return window.speakingEvents || [];
-            ''')
-            return events_json if events_json else []
+        def get_log_lines():
+            """Returns new log lines since the last call."""
+            lines = self.seleniumHelper.execute(
+                'var lines = window.speakerLogLines.slice(0); '
+                'window.speakerLogLines = []; '
+                'return lines;'
+            )
+            return lines if lines else []
 
-        def get_new_events():
-            """Returns only new events since last call."""
-            events_json = self.seleniumHelper.execute('''
-                const events = window.speakingEvents || [];
-                const lastIndex = window.lastProcessedEventIndex || 0;
-                const newEvents = events.slice(lastIndex);
-                window.lastProcessedEventIndex = events.length;
-                return newEvents;
-            ''')
-            return events_json if events_json else []
-
-        def stop_monitoring():
-            """Stops the monitoring."""
-            self.seleniumHelper.execute('''
-                if (window.storePollingInterval) clearInterval(window.storePollingInterval);
-                if (window.domPollingInterval) clearInterval(window.domPollingInterval);
-                if (window.participantsPollingInterval) clearInterval(window.participantsPollingInterval);
-                console.log('[SPEAKING MONITOR] Stopped');
-            ''')
-            return get_all_events()
-
-        def get_debug_info():
-            """Returns debug information."""
-            debug_info = self.seleniumHelper.execute('''
-                return {
-                    storeAvailable: !!window.globalThis?.store,
-                    webSocketIntercepted: !!window._websocketIntercepted,
-                    speakingEventsCount: window.speakingEvents?.length || 0,
-                    storeSpeakingState: window.globalThis?.store?.state?.participantsStore?.speaking || {},
-                    inCallState: window.globalThis?.store?.state?.participantsStore?.inCall || {},
-                    ocaTalkAvailable: !!window.OCA?.Talk,
-                    url: window.location.href
-                };
-            ''')
-            return debug_info
-
-        def force_check():
-            """Force check current speaking status from store."""
-            status = self.seleniumHelper.execute('''
-                const store = window.globalThis?.store;
-                if (!store) return [];
-
-                const speaking = store.state?.participantsStore?.speaking || {};
-                const attendees = store.state?.participantsStore?.attendees || {};
-                const inCall = store.state?.participantsStore?.inCall || {};
-                const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
-
-                const result = [];
-
-                // Проверяем всех участников в звонке
-                const roomInCall = inCall[token] || {};
-                const participantsInCall = Object.keys(roomInCall);
-
-                for (const [id, info] of Object.entries(speaking)) {
-                    if (info.speaking === true) {
-                        const attendee = attendees[token]?.[id] || {};
-                        result.push({
-                            attendeeId: id,
-                            name: attendee.displayName || attendee.actorId || 'Unknown',
-                            speaking: info.speaking,
-                            totalTimeMs: info.totalCountedTime || 0,
-                            totalTimeSec: ((info.totalCountedTime || 0) / 1000).toFixed(1)
-                        });
-                    }
-                }
-
-                return {
-                    speakers: result,
-                    participantsInCall: participantsInCall.length,
-                    speakingCount: Object.keys(speaking).length
-                };
-            ''')
-            return status
-
-        def debug_speaker_mode():
-            """Отладка speaker режима"""
-
-            result = self.seleniumHelper.execute('''
-                const store = window.globalThis?.store;
-                const participantsStore = store?.state?.participantsStore;
-
-                const token = window.location.pathname.match(/\\/call\\/([^\\/?#]+)/)?.[1];
-
-                return {
-                    url: window.location.href,
-                    token: token,
-                    storeAvailable: !!store,
-                    participantsStoreAvailable: !!participantsStore,
-                    inCall: participantsStore?.inCall?.[token] || {},
-                    speaking: participantsStore?.speaking || {},
-                    attendees: Object.keys(participantsStore?.attendees?.[token] || {}).length,
-                    webSocketIntercepted: !!window._websocketIntercepted,
-                    speakingEventsCount: window.speakingEvents?.length || 0
-                };
-            ''')
-
-            self._logger.info(f"Speaker mode debug: {result}")
-            return result
+        def stop():
+            """Stops the polling interval and returns remaining log lines."""
+            self.seleniumHelper.execute(
+                'if (window._speakerMonitorInterval) '
+                'clearInterval(window._speakerMonitorInterval);'
+            )
+            return get_log_lines()
 
         return {
-            'get_all': get_all_events,
-            'get_new': get_new_events,
-            'stop': stop_monitoring,
-            'debug': get_debug_info,
-            'debug_speaker': debug_speaker_mode,
-            'force_check': force_check
+            'get_log_lines': get_log_lines,
+            'stop': stop,
         }
